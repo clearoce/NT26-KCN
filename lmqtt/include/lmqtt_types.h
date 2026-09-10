@@ -16,6 +16,16 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------ */
+/* 库身份与版本
+
+   符号前缀保持 lmqtt_（短前缀 + 头文件目录隔离），完整身份由这组宏承担：
+   需要强唯一标识的场合（版本检查、条件编译、包管理、文档索引）用它们。 */
+#define NT26_KCN_LMQTT_VERSION_MAJOR    0
+#define NT26_KCN_LMQTT_VERSION_MINOR    1
+#define NT26_KCN_LMQTT_VERSION_PATCH    0
+#define NT26_KCN_LMQTT_VERSION_STRING   "0.1.0"
+
+/* ------------------------------------------------------------------ */
 /* 错误码（负值）
 
    与 AT 层的 ERROR 区分开：模组回 ERROR/+CME ERROR 归一为 LMQTT_ERR_AT。 */

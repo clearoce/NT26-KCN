@@ -5,6 +5,13 @@
 
 add_library(lmqtt STATIC
     src/lmqtt_core.c
+    src/lmqtt_cfg.c
+    src/lmqtt_open.c
+    src/lmqtt_close.c
+    src/lmqtt_conn.c
+    src/lmqtt_subunsub.c
+    src/lmqtt_pub.c
+    src/lmqtt_urc.c
 )
 
 target_include_directories(lmqtt

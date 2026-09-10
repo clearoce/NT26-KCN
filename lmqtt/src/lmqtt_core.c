@@ -12,19 +12,24 @@
 /* ------------------------------------------------------------------ */
 /* 辅助 */
 
-static int32_t lmqtt_write_cmd(lmqtt_t *me, const char *cmd)
+int32_t lmqtt_cmd_send(lmqtt_t *me, const void *buf, size_t len)
 {
-    static const char crlf[2] = { '\r', '\n' };
-    size_t len = strlen(cmd);
-
-    /* 注意：串口写入的独占性由调用方的 mutex 保证，而非这两次 write 本身 */
-    if (me->port->write(cmd, len) != (int32_t)len) {
-        return LMQTT_ERR_IO;
+    if (me == NULL || buf == NULL) {
+        return LMQTT_ERR_PARAM;
     }
-    if (me->port->write(crlf, sizeof(crlf)) != (int32_t)sizeof(crlf)) {
+    /* 写入的独占性由命令事务的 mutex 保证，而非单次 write 本身 */
+    if (me->port->write(buf, len) != (int32_t)len) {
         return LMQTT_ERR_IO;
     }
     return LMQTT_OK;
+}
+
+int32_t lmqtt_cmd_send_str(lmqtt_t *me, const char *s)
+{
+    if (s == NULL) {
+        return LMQTT_ERR_PARAM;
+    }
+    return lmqtt_cmd_send(me, s, strlen(s));
 }
 
 static void lmqtt_sem_give(lmqtt_t *me)
@@ -368,13 +373,9 @@ void lmqtt_set_stats_cb(lmqtt_t *me, lmqtt_stats_cb_t cb, void *user)
 /* ------------------------------------------------------------------ */
 /* 命令执行 */
 
-int32_t lmqtt_cmd_exec(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid,
-                       uint32_t ack_tmo, uint32_t urc_tmo,
-                       lmqtt_cmd_out_t *out, const char *cmd)
+int32_t lmqtt_cmd_begin(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid)
 {
-    int32_t rc;
-
-    if (me == NULL || cmd == NULL) {
+    if (me == NULL) {
         return LMQTT_ERR_PARAM;
     }
 
@@ -391,20 +392,42 @@ int32_t lmqtt_cmd_exec(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid,
     me->cmd.rejected = false;
 
     lmqtt_sem_reset(me);
+    return LMQTT_OK;
+}
 
-    rc = lmqtt_write_cmd(me, cmd);
-    if (rc != LMQTT_OK) {
-        goto out;
+int32_t lmqtt_cmd_abort(lmqtt_t *me)
+{
+    if (me == NULL) {
+        return LMQTT_ERR_PARAM;
     }
+
+    me->cmd.kind = LMQTT_CMD_NONE;
+    if (me->mutex != NULL) {
+        me->port->mutex_unlock(me->mutex);
+    }
+    return LMQTT_OK;
+}
+
+int32_t lmqtt_cmd_finish(lmqtt_t *me, uint32_t ack_tmo, uint32_t urc_tmo,
+                         lmqtt_cmd_out_t *out)
+{
+    int32_t rc;
+    lmqtt_cmd_kind_t kind;
+
+    if (me == NULL) {
+        return LMQTT_ERR_PARAM;
+    }
+
+    kind = (lmqtt_cmd_kind_t)me->cmd.kind;
 
     /* 第一步：等命令被接受 */
     if (me->port->sem_take(me->sem, ack_tmo) != 0) {
-        LMQTT_LOG(LMQTT_LOG_WARN, "ack timeout: %s", cmd);
+        LMQTT_LOG(LMQTT_LOG_WARN, "ack timeout");
         rc = LMQTT_ERR_TIMEOUT;
         goto out;
     }
     if (me->cmd.rejected) {
-        LMQTT_LOG(LMQTT_LOG_WARN, "rejected: %s", cmd);
+        LMQTT_LOG(LMQTT_LOG_WARN, "command rejected");
         rc = LMQTT_ERR_AT;
         goto out;
     }
@@ -419,7 +442,7 @@ int32_t lmqtt_cmd_exec(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid,
     if (!me->cmd.got) {
         lmqtt_sem_reset(me);
         if (me->port->sem_take(me->sem, urc_tmo) != 0 && !me->cmd.got) {
-            LMQTT_LOG(LMQTT_LOG_WARN, "urc timeout: %s", cmd);
+            LMQTT_LOG(LMQTT_LOG_WARN, "urc timeout");
             rc = LMQTT_ERR_TIMEOUT;
             goto out;
         }
@@ -432,9 +455,33 @@ int32_t lmqtt_cmd_exec(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid,
     rc = LMQTT_OK;
 
 out:
-    me->cmd.kind = LMQTT_CMD_NONE;
-    if (me->mutex != NULL) {
-        me->port->mutex_unlock(me->mutex);
-    }
+    lmqtt_cmd_abort(me);
     return rc;
+}
+
+int32_t lmqtt_cmd_exec(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid,
+                       uint32_t ack_tmo, uint32_t urc_tmo,
+                       lmqtt_cmd_out_t *out, const char *cmd)
+{
+    int32_t rc;
+
+    if (me == NULL || cmd == NULL) {
+        return LMQTT_ERR_PARAM;
+    }
+
+    rc = lmqtt_cmd_begin(me, kind, msgid);
+    if (rc != LMQTT_OK) {
+        return rc;
+    }
+
+    rc = lmqtt_cmd_send_str(me, cmd);
+    if (rc == LMQTT_OK) {
+        rc = lmqtt_cmd_send(me, "\r\n", 2);
+    }
+    if (rc != LMQTT_OK) {
+        lmqtt_cmd_abort(me);
+        return rc;
+    }
+
+    return lmqtt_cmd_finish(me, ack_tmo, urc_tmo, out);
 }

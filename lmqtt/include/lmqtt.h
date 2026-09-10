@@ -23,11 +23,13 @@
 #include "lmqtt_open.h"
 #include "lmqtt_close.h"
 #include "lmqtt_conn.h"
-#include "lmqtt_disc.h"
 #include "lmqtt_subunsub.h"
 #include "lmqtt_pub.h"
-#include "lmqtt_pubex.h"
-#include "lmqtt_read.h"
 #include "lmqtt_urc.h"
+/* 以下章节待实现（阶段 3）：
+   lmqtt_disc.h     AT+LMQTTDISC
+   lmqtt_pubex.h    AT+LMQTTPUBEX
+   lmqtt_read.h     AT+LMQTTREAD
+ */
 
 #endif /* LMQTT_H */
