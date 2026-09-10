@@ -40,19 +40,25 @@ extern "C" {
 #define LMQTT_ERR_IO        (-8)    /* 移植层写入失败 */
 
 /* ------------------------------------------------------------------ */
-/* 超时（毫秒）—— 取自手册各指令的「最大响应时间」 */
-#define LMQTT_TMO_CFG       5000U
-#define LMQTT_TMO_OPEN      160000U
-#define LMQTT_TMO_CONN      30000U
-#define LMQTT_TMO_SUBUNSUB  30000U
-#define LMQTT_TMO_PUB       30000U
+/* 超时（毫秒）
+ *
+ * 手册给出的「最大响应时间」是最坏情况（网络极差时），照搬到嵌入式侧会把
+ * 调用任务长时间占住——LMQTTOPEN 手册值 160s，实测仅约 0.5s，若模组进入
+ * 不响应状态，等满 160s 只会白白拖死业务任务。故除 CONN/SUB/PUB 需完整
+ * MQTT 握手外，其余按实测值留足余量后大幅下调，宁可快速失败后重试。
+ */
+#define LMQTT_TMO_CFG       2000U       /* 手册 5s，实测约 7ms */
+#define LMQTT_TMO_OPEN      15000U      /* 手册 160s，实测约 0.5s */
+#define LMQTT_TMO_CONN      30000U      /* 保持手册值：需完整 MQTT 握手 */
+#define LMQTT_TMO_SUBUNSUB  30000U      /* 保持手册值 */
+#define LMQTT_TMO_PUB       30000U      /* 保持手册值 */
 #define LMQTT_TMO_PUBEX     30000U
 #define LMQTT_TMO_READ      5000U
-#define LMQTT_TMO_CLOSE     5000U
+#define LMQTT_TMO_CLOSE     5000U       /* 需关闭 TCP，留足 */
 #define LMQTT_TMO_DISC      5000U
 
-/* 命令被接受（OK/ERROR）的等待窗口。手册未规定，实测约 0.5s */
-#define LMQTT_TMO_ACK       5000U
+/* 命令被接受（OK/ERROR）的等待窗口。手册未规定，实测约 7ms */
+#define LMQTT_TMO_ACK       2000U
 
 /* ------------------------------------------------------------------ */
 /* 容量上限 */
