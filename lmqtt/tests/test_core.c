@@ -316,6 +316,92 @@ static void test_downlink_busy_drop(void)
     CHECK(lmqtt_downlink_drops(&g_ctx) == 1, "覆盖尝试应计入 drops");
 }
 
+/* take 之后 RX 再写一条，不得动到调用方手里那块缓冲。
+   单缓冲实现会在这里露馅：take 一清 down_ready，RX 就就地覆写。 */
+static void test_take_survives_next_put(void)
+{
+    const char *p;
+
+    printf("test_take_survives_next_put\n");
+    setup();
+
+    lmqtt_rx_feed(&g_ctx, "+LMQTTURC: RECV,0,1,\"t\",FIRST\r\n",
+                  strlen("+LMQTTURC: RECV,0,1,\"t\",FIRST\r\n"));
+    p = lmqtt_take_downlink(&g_ctx);
+    CHECK(p != NULL && strcmp(p, "FIRST") == 0, "第一条应取到");
+
+    /* 调用方还在用 p 期间，RX 侧来了第二条 */
+    lmqtt_rx_feed(&g_ctx, "+LMQTTURC: RECV,0,2,\"t\",SECOND\r\n",
+                  strlen("+LMQTTURC: RECV,0,2,\"t\",SECOND\r\n"));
+
+    CHECK(p != NULL && strcmp(p, "FIRST") == 0,
+          "取出后 RX 再写入不得覆写调用方手里的数据");
+
+    const char *q = lmqtt_take_downlink(&g_ctx);
+    CHECK(q != NULL && strcmp(q, "SECOND") == 0, "第二条应取到");
+}
+
+/* payload 逐字节原样投递；只有"整段被一对引号包住"时才剥这一对。
+   旧实现无条件剥掉首字符，会把 "a",1 变成 a",1 —— 静默改数据。 */
+static void test_recv_payload_verbatim(void)
+{
+    const char *p;
+
+    printf("test_recv_payload_verbatim\n");
+
+    setup();
+    lmqtt_rx_feed(&g_ctx, "+LMQTTURC: RECV,0,1,\"t\",\"a\",1\r\n",
+                  strlen("+LMQTTURC: RECV,0,1,\"t\",\"a\",1\r\n"));
+    p = lmqtt_take_downlink(&g_ctx);
+    CHECK(p != NULL && strcmp(p, "\"a\",1") == 0,
+          "非整体引号包裹的 payload 必须逐字节原样");
+
+    setup();
+    lmqtt_rx_feed(&g_ctx, "+LMQTTURC: RECV,0,1,\"t\",\"hello\"\r\n",
+                  strlen("+LMQTTURC: RECV,0,1,\"t\",\"hello\"\r\n"));
+    p = lmqtt_take_downlink(&g_ctx);
+    CHECK(p != NULL && strcmp(p, "hello") == 0,
+          "整体被引号包裹时应剥掉这一对");
+}
+
+/* 只有 topic、没有 payload：不产生"空串下行"（消费侧会拿它去解析 JSON） */
+static void test_recv_topic_only_no_downlink(void)
+{
+    printf("test_recv_topic_only_no_downlink\n");
+    setup();
+
+    lmqtt_rx_feed(&g_ctx, "+LMQTTURC: RECV,0,1,\"t\"\r\n",
+                  strlen("+LMQTTURC: RECV,0,1,\"t\"\r\n"));
+
+    CHECK(lmqtt_take_downlink(&g_ctx) == NULL, "无 payload 时不应投递");
+    CHECK(lmqtt_downlink_drops(&g_ctx) == 0, "这不算丢弃");
+}
+
+/* 结果 URC 先于 OK 到达、且信号量已被消耗：不能把到手的成功判成超时。
+   （旧实现只看 sem_take 的返回值，会返回 LMQTT_ERR_TIMEOUT） */
+static void test_urc_only_no_false_timeout(void)
+{
+    lmqtt_cmd_out_t out = { 0 };
+    int32_t         rc;
+
+    printf("test_urc_only_no_false_timeout\n");
+    setup();
+    reset_steps(NULL, NULL, NULL);      /* 不再喂任何回包：OK 永不到达 */
+
+    CHECK(lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_PUB, 5) == LMQTT_OK, "begin 应成功");
+
+    lmqtt_rx_feed(&g_ctx, "+LMQTTPUB: 0,5,0\r\n",
+                  strlen("+LMQTTPUB: 0,5,0\r\n"));
+
+    /* 把 URC 给出的 token 消耗掉，构造出"got=true 且 sem 为空"的状态 */
+    (void)mock_sem_take(NULL, 0);
+
+    rc = lmqtt_cmd_finish(&g_ctx, LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out);
+
+    CHECK(rc == LMQTT_OK, "结果 URC 已到就不该报超时");
+    CHECK(out.result == LMQTT_RES_OK, "result 应为 0");
+}
+
 /* 退订 URC 的手册拼写差异（+LMQTTUNSUNSUB）也应被识别 */
 static void test_unsubscribe_urc_spelling(void)
 {
@@ -348,6 +434,10 @@ int main(void)
     test_stats();
     test_overflow_line_dropped();
     test_downlink_busy_drop();
+    test_take_survives_next_put();
+    test_recv_payload_verbatim();
+    test_recv_topic_only_no_downlink();
+    test_urc_only_no_false_timeout();
     test_unsubscribe_urc_spelling();
 
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);

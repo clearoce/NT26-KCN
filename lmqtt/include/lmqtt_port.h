@@ -3,7 +3,10 @@
  *
  * 库不引用任何 OS / MCU 头文件，全部平台相关能力通过本结构注入。
  * 宿主只需实现 write + 一组互斥/信号量原语；串口接收方向由宿主在
- * 中断或接收任务里调用 lmqtt_rx_feed() 喂入（见 lmqtt_core.h）。
+ * **接收任务**里调用 lmqtt_rx_feed() 喂入（见 lmqtt_core.h）。
+ *
+ * 上下文约束：本结构里的信号量/互斥都是任务级原语，因此 lmqtt_rx_feed()
+ * 也必须在任务上下文调用 —— 中断里只做"投递到队列/流缓冲"，不要直接调它。
  */
 #ifndef LMQTT_PORT_H
 #define LMQTT_PORT_H 1
@@ -23,9 +26,27 @@ typedef enum lmqtt_log_level {
 } lmqtt_log_level_t;
 
 /*
+ * 宿主配置头（可选）。
+ *
+ * 库不预设任何平台，宿主的日志实现通过「配置文件」注入 —— 与本项目其它库
+ * 同一套路（FreeRTOSConfig.h / ALUMY_CONFIG_FILE / LFS_CONFIG）。用法是在
+ * 构建系统里定义：
+ *     LMQTT_CONFIG_FILE=<my_lmqtt_config.h>
+ * 该头会在日志宏展开之前被包含，宿主可在其中定义 LMQTT_LOG_IMPL。
+ *
+ * 之所以不用 -DLMQTT_LOG_IMPL=... ：那是个带 ... 的宏，命令行转义逗号很麻烦，
+ * 而且库的多个 .c 都要看到它，逐个文件 #define 容易漏。
+ */
+#ifdef LMQTT_CONFIG_FILE
+#include LMQTT_CONFIG_FILE
+#endif
+
+/*
  * 日志接入（编译期，默认编译为空）：
  * 宿主可在包含本头文件之前定义 LMQTT_LOG_IMPL 接入自己的日志系统，例如
  *     #define LMQTT_LOG_IMPL(lv, fmt, ...)  my_log(lv, "[LMQTT] " fmt, ##__VA_ARGS__)
+ *
+ * 注意实现里不要做重活：LMQTT_LOG 可能在串口接收上下文（小栈任务）里被调用。
  */
 #ifdef LMQTT_LOG_IMPL
 #define LMQTT_LOG(lvl, fmt, ...)    LMQTT_LOG_IMPL(lvl, fmt, ##__VA_ARGS__)

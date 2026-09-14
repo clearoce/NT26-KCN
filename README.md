@@ -18,7 +18,7 @@ NT26 模组的 AT 指令集封装库。按功能域划分一级目录，`lmqtt/`
 | 要点 | 说明 |
 | --- | --- |
 | **不依赖任何 OS/MCU** | 平台能力（串口写、互斥、信号量）全部通过 `lmqtt_port_t` 注入 |
-| **不创建任务** | 纯被动：宿主在串口 ISR/接收任务里喂字节，库内部组帧分发 |
+| **不创建任务** | 纯被动：宿主在串口接收任务里喂字节，库内部组帧分发（**不可在中断里喂**——库内是任务级信号量，见 `lmqtt_core.h` 的 `lmqtt_rx_feed` 说明） |
 | **下行用轮询交付** | `lmqtt_take_downlink()` 由业务任务主动取走，解析在自己的栈上做 |
 | **按 msgID 匹配响应** | 迟到/串扰的 URC 不会被误判为当前命令的结果 |
 | **不掺业务** | 不含 MQTT 报文格式解析、JSON、认证算法——只做 AT 封装 |
@@ -88,8 +88,8 @@ static lmqtt_t ctx;
 lmqtt_init(&ctx, &my_port);
 lmqtt_set_stats_cb(&ctx, on_stats, NULL);
 
-/* 串口中断或接收任务 */
-void uart_rx_isr(const uint8_t *buf, size_t len)
+/* 串口接收任务（**不是中断**：库内用的是任务级信号量） */
+void uart_rx_task(const uint8_t *buf, size_t len)
 {
     lmqtt_rx_feed(&ctx, buf, len);
 }

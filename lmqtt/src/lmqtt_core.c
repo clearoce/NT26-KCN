@@ -51,6 +51,8 @@ static void lmqtt_sem_reset(lmqtt_t *me)
 
 void lmqtt_downlink_put(lmqtt_t *me, const char *data, size_t len)
 {
+    uint8_t slot;
+
     if (me->down_ready || len >= LMQTT_DOWN_MAX) {
         me->down_drops++;
         LMQTT_LOG(LMQTT_LOG_WARN, "downlink dropped: busy=%d len=%u drops=%u",
@@ -58,18 +60,25 @@ void lmqtt_downlink_put(lmqtt_t *me, const char *data, size_t len)
         return;
     }
 
-    memcpy(me->down, data, len);
-    me->down[len] = '\0';
+    slot = (uint8_t)(me->down_idx ^ 1u);    /* 写另一块，别碰消费者手里那块 */
+    memcpy(me->down[slot], data, len);
+    me->down[slot][len] = '\0';
+    me->down_idx   = slot;
     me->down_ready = true;
 }
 
 const char *lmqtt_take_downlink(lmqtt_t *me)
 {
+    uint8_t slot;
+
     if (me == NULL || !me->down_ready) {
         return NULL;
     }
+
+    /* 先取槽号再清标志：清标志前 down_ready 仍为真，生产者不会写入 */
+    slot = me->down_idx;
     me->down_ready = false;
-    return me->down;
+    return me->down[slot];
 }
 
 uint32_t lmqtt_downlink_drops(const lmqtt_t *me)
@@ -124,17 +133,36 @@ static void lmqtt_urc_recv(lmqtt_t *me, const char *data)
     if (*p != '"') {
         return;
     }
-    p++;                            /* 跳过结尾引号 */
+    p++;                            /* 跳过 topic 的结尾引号 */
     if (*p == ',') {
         p++;
-        while (*p == ' ' || *p == '"') {
-            p++;
+        while (*p == ' ') {
+            p++;                    /* 只跳过分隔空白 */
         }
     } else if (*p == '"') {
         p++;
     }
 
-    lmqtt_downlink_put(me, p, strlen(p));
+    /* payload 的取法：
+       实测模组投递的是**不带引号**的原文（JSON 也是原样），所以默认逐字节
+       原样投递。逐个剥 ' '/'"' 是错的 —— payload 首字符恰好是引号或空格时
+       会被静默改数据（旧实现会把 "hello" 变成 hello"）。
+       仅当整段确实被一对引号包住（"..."）时才剥这一对，以兼容该形式。 */
+    {
+        size_t plen = strlen(p);
+
+        if (plen >= 2 && p[0] == '"' && p[plen - 1] == '"') {
+            p++;
+            plen -= 2;
+        }
+
+        /* 只有 topic、没有 payload：不投递，否则消费侧会收到一条空串下行 */
+        if (plen == 0) {
+            return;
+        }
+
+        lmqtt_downlink_put(me, p, plen);
+    }
 }
 
 /*
@@ -420,8 +448,11 @@ int32_t lmqtt_cmd_finish(lmqtt_t *me, uint32_t ack_tmo, uint32_t urc_tmo,
 
     kind = (lmqtt_cmd_kind_t)me->cmd.kind;
 
-    /* 第一步：等命令被接受 */
-    if (me->port->sem_take(me->sem, ack_tmo) != 0) {
+    /* 第一步：等命令被接受。
+       注意 `&& !me->cmd.got`：结果 URC 可能先于 OK 到达并把信号量消耗掉
+       （cmd.got 已置位）。只看 sem_take 的返回值就报超时，会把已经到手的
+       成功判成失败 —— 这是个窗口极小但确实存在的假超时。 */
+    if (me->port->sem_take(me->sem, ack_tmo) != 0 && !me->cmd.got) {
         LMQTT_LOG(LMQTT_LOG_WARN, "ack timeout");
         rc = LMQTT_ERR_TIMEOUT;
         goto out;

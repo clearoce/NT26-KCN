@@ -69,8 +69,14 @@ struct lmqtt {
     /* ---- 当前命令（内部）---- */
     lmqtt_cmd_ctx_t cmd;
 
-    /* ---- 下行交付（内部，经 lmqtt_take_downlink 取走）---- */
-    char            down[LMQTT_DOWN_MAX];
+    /* ---- 下行交付（内部，经 lmqtt_take_downlink 取走）----
+       双缓冲，生产者在 RX 上下文、消费者在另一任务：
+       单缓冲时 take() 一清 down_ready，RX 侧的下一条 URC 就会覆写消费者
+       正在解析的那块内存（"借用语义"形同虚设）。改双缓冲后，生产者的
+       下一次写落在另一块槽，再下一次会被 down_ready 拦下 —— 消费者手里的
+       那块在整个解析期间都安全。 */
+    char            down[2][LMQTT_DOWN_MAX];
+    volatile uint8_t down_idx;      /* 生产者最后写入的槽号 */
     volatile bool   down_ready;
     uint32_t        down_drops;     /* 因未及时取走/超长而丢弃的条数 */
 
@@ -92,7 +98,14 @@ int32_t lmqtt_init(lmqtt_t *me, const lmqtt_port_t *port);
 void lmqtt_deinit(lmqtt_t *me);
 
 /*
- * 喂入串口收到的原始字节（在串口 ISR 或接收任务里调用）。
+ * 喂入串口收到的原始字节。
+ *
+ * 上下文：**串口接收任务**，不可在中断里调用。
+ * 原因：内部会调用 port->sem_give / stats_cb / LMQTT_LOG，移植层提供的都是
+ * 任务级原语（FreeRTOS 下即 xSemaphoreGive 等）。要在 ISR 里用，得先在宿主
+ * 侧把字节投进队列/流缓冲，由接收任务取出后再调用本函数 —— 本项目就是这么
+ * 做的（iot_uart_recv 内回调）。
+ *
  * 内部按 CRLF 组行，分发 URC / 唤醒命令等待。可逐字节多次调用。
  * 返回 LMQTT_OK；入参非法返回 LMQTT_ERR_PARAM。
  */
