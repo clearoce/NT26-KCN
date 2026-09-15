@@ -6,7 +6,7 @@
  *
  * 数据流：
  *   发送  宿主/业务任务  ──lmqtt_pub()等──> 引擎 ──port->write──> 串口
- *   接收  串口 ISR/任务  ──lmqtt_rx_feed()──> 引擎组帧 ─┬─ 结果 URC  → 唤醒等待中的命令
+ *   接收  串口接收任务   ──lmqtt_rx_feed()──> 引擎组帧 ─┬─ 结果 URC  → 唤醒等待中的命令
  *                                                       ├─ STATS    → stats_cb 回调
  *                                                       └─ RECV     → 拷入下行缓冲
  *   下行  业务任务  ──lmqtt_take_downlink()──> 取走 payload 自行解析
@@ -32,22 +32,44 @@ typedef enum lmqtt_cmd_kind {
     LMQTT_CMD_PUB,          /* +LMQTTPUB:      <id>,<msgID>,<result>[,<extend>] */
 } lmqtt_cmd_kind_t;
 
-/* 命令等待上下文（由引擎维护，指令层只读） */
+/*
+ * 命令等待上下文（由引擎维护，指令层只读）。
+ *
+ * 并发约束：本结构由**命令任务**写、**接收任务**读，两者之间没有互斥 ——
+ * 接收侧不能取 me->mutex：cmd_begin 持锁直到 cmd_abort，而 cmd_finish 在
+ * 持锁期间等待接收侧的 sem_give，接收侧再去 lock 必然死锁。所以配对信息
+ * (kind, msgid) 必须能一次性原子读写：这里打包进单个 32 位字 pending，
+ * 命令侧整字发布、接收侧整字快照。旧实现把 kind/msgid 拆成两个 volatile
+ * 字段分别读写，接收侧会读到"新 kind + 旧 msgid"这种撕裂组合，从而把上
+ * 一条命令的迟到 URC 当成当前命令的结果。
+ *
+ * 前提：目标平台对**自然对齐的 32 位访问必须是单拷贝原子的**（Cortex-M0+
+ * 等单核 MCU 天然满足；多核或带 cache 的平台须自行做一致性维护）。
+ * 详见 lmqtt_port.h 的上下文约束。
+ *
+ * 字段一律 volatile：每次访问都落到内存，不给编译器重排或缓存的机会。
+ */
 typedef struct lmqtt_cmd_ctx {
-    volatile uint8_t  kind;         /* lmqtt_cmd_kind_t */
-    volatile uint16_t msgid;        /* 期望的 msgID；0 表示不校验（OPEN/CLOSE/CONN/DISC） */
+    volatile uint32_t pending;      /* 配对字：[23:16]=kind，[15:0]=msgid */
     volatile int32_t  result;       /* 结果 URC 的 <result> */
     volatile int32_t  extra;        /* <extend> 或 <ret_code> */
+    volatile uint32_t delivered;    /* 结果槽里这一份 result/extra 属于哪个配对字 */
     volatile bool     got;          /* 结果 URC 已到达 */
     volatile bool     acked;        /* 命令已被接受（收到 OK） */
     volatile bool     rejected;     /* 命令被拒绝（ERROR / +CME ERROR） */
 } lmqtt_cmd_ctx_t;
 
+/* 配对字的编解码：kind 占高 8 位、msgid 占低 16 位，整体装得进一个字。 */
+#define LMQTT_CMD_PEND(k, m)   (((uint32_t)(uint8_t)(k) << 16) | \
+                                (uint32_t)(uint16_t)(m))
+#define LMQTT_PEND_KIND(w)     ((lmqtt_cmd_kind_t)(((w) >> 16) & 0xFFu))
+#define LMQTT_PEND_MSGID(w)    ((uint16_t)((w) & 0xFFFFu))
+
 typedef struct lmqtt lmqtt_t;
 
 /*
  * STATS 通知回调。
- * 上下文：lmqtt_rx_feed() 的调用者（通常是串口接收任务/中断），必须尽快返回——
+ * 上下文：lmqtt_rx_feed() 的调用者（通常是串口接收任务），必须尽快返回——
  *        不要在其中做解析、打印大段日志或申请内存。
  */
 typedef void (*lmqtt_stats_cb_t)(lmqtt_t *me, lmqtt_stats_t stat,

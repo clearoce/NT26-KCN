@@ -74,6 +74,13 @@ gcc -Wall -Wextra -I../include -I../src -o test_core test_core.c ../src/lmqtt_co
 | `mutex_create/lock/unlock` | 串行化一次完整的命令事务（单任务调用可全部留 NULL） |
 | `sem_create/take/give/reset` | 命令完成通知（二值信号量） |
 
+另有一条**目标平台必须满足**的前提：命令上下文与接收上下文之间没有互斥 ——
+接收侧不能取上面那条 mutex（命令侧在持锁期间等接收侧的 `sem_give`，接收侧
+再去 lock 必然死锁），两者的配对信息靠一个**自然对齐的 32 位字**无锁传递
+（见 `lmqtt_core.h` 的 `lmqtt_cmd_ctx_t`）。因此平台必须保证**自然对齐的
+32 位访问是单拷贝原子的**：单核 MCU 天然满足（Cortex-M0+ 等），多核或带
+cache 的平台须自行做一致性维护。
+
 日志可选，通过编译期宏接入，默认编译为空：
 
 ```c
@@ -107,7 +114,7 @@ if (dn != NULL) {
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| 1 | 骨架、类型/移植层、AT 引擎 + PC 单元测试 | 完成（25 项断言通过） |
+| 1 | 骨架、类型/移植层、AT 引擎 + PC 单元测试 | 完成（`ctest` 2/2：`test_core` 47 项、`test_cmd` 40 项断言通过） |
 | 2 | 指令章节实现，接入目标项目并真机验证 | 进行中 |
 | 3 | 手册其余章节（DISC / PUBEX / READ / will / SSL / aliauth） | 待开始 |
 

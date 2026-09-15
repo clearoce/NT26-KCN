@@ -204,6 +204,12 @@ static const lmqtt_urc_entry_t s_result_urcs[] = {
 static bool lmqtt_match_result_urc(lmqtt_t *me, const char *line, size_t len)
 {
     size_t i;
+    /* 配对上下文整字快照一次，本行的过滤与放行都只看这一份：分别读
+       kind/msgid 会被 cmd_begin 的发布切成"新 kind + 旧 msgid"，从而把
+       上一条命令的迟到 URC 放行成当前命令的结果。 */
+    uint32_t         pend  = me->cmd.pending;
+    lmqtt_cmd_kind_t ckind = LMQTT_PEND_KIND(pend);
+    uint16_t         cmid  = LMQTT_PEND_MSGID(pend);
 
     for (i = 0; i < sizeof(s_result_urcs) / sizeof(s_result_urcs[0]); i++) {
         const lmqtt_urc_entry_t *e = &s_result_urcs[i];
@@ -223,10 +229,9 @@ static bool lmqtt_match_result_urc(lmqtt_t *me, const char *line, size_t len)
                 return true;        /* 格式不符，消费掉避免误判 */
             }
             /* 迟到/串扰的 URC 不得当作当前命令的结果 */
-            if (me->cmd.kind == e->kind && me->cmd.msgid != 0 &&
-                mid != (unsigned)me->cmd.msgid) {
+            if (ckind == e->kind && cmid != 0 && mid != (unsigned)cmid) {
                 LMQTT_LOG(LMQTT_LOG_DEBUG, "stale %s msgid=%u (expect %u)",
-                          e->prefix, mid, (unsigned)me->cmd.msgid);
+                          e->prefix, mid, (unsigned)cmid);
                 return true;
             }
         } else {
@@ -235,10 +240,15 @@ static bool lmqtt_match_result_urc(lmqtt_t *me, const char *line, size_t len)
             }
         }
 
-        if (me->cmd.kind == e->kind && me->cmd.kind != LMQTT_CMD_NONE) {
-            me->cmd.result = result;
-            me->cmd.extra  = extra;
-            me->cmd.got    = true;
+        /* 写回前复核配对字没被换掉（abort 或下一条命令的 begin）：单次 32 位
+           比较，几乎零成本。解析期间命令侧若已放弃本条命令，就不要再往它的
+           结果槽里写。 */
+        if (ckind == e->kind && ckind != LMQTT_CMD_NONE &&
+            me->cmd.pending == pend) {
+            me->cmd.result    = result;
+            me->cmd.extra     = extra;
+            me->cmd.delivered = pend;       /* 给结果署名，命令侧据此认领 */
+            me->cmd.got       = true;       /* 最后置位：前面的字段先可见 */
             lmqtt_sem_give(me);
         }
 
@@ -411,13 +421,18 @@ int32_t lmqtt_cmd_begin(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid)
         me->port->mutex_lock(me->mutex);
     }
 
-    me->cmd.kind     = (uint8_t)kind;
-    me->cmd.msgid    = msgid;
-    me->cmd.result   = -1;
-    me->cmd.extra    = 0;
-    me->cmd.got      = false;
-    me->cmd.acked    = false;
-    me->cmd.rejected = false;
+    /* 顺序要紧：先复位结果槽，最后才整字发布 (kind, msgid)。
+       发布是接收侧的放行条件，必须排在复位之后 —— 否则接收侧可能先看到新
+       配对、写入 result/got，紧接着被这里的复位抹掉。该窗口内接收侧匹配到
+       的只可能是上一条命令的迟到 URC，复位先行使之不会被写进结果槽。 */
+    me->cmd.result    = -1;
+    me->cmd.extra     = 0;
+    me->cmd.delivered = LMQTT_CMD_PEND(LMQTT_CMD_NONE, 0);
+    me->cmd.got       = false;
+    me->cmd.acked     = false;
+    me->cmd.rejected  = false;
+
+    me->cmd.pending   = LMQTT_CMD_PEND(kind, msgid);   /* 单次对齐 32 位发布 */
 
     lmqtt_sem_reset(me);
     return LMQTT_OK;
@@ -429,30 +444,44 @@ int32_t lmqtt_cmd_abort(lmqtt_t *me)
         return LMQTT_ERR_PARAM;
     }
 
-    me->cmd.kind = LMQTT_CMD_NONE;
+    /* 整字清除：kind 归 NONE 的同时把 msgid 一并清零。msgid 残留会让同 kind
+       的下一条命令期间，接收侧的快照命中上一条的 msgid，把迟到 URC 当成
+       当前命令的结果。 */
+    me->cmd.pending = LMQTT_CMD_PEND(LMQTT_CMD_NONE, 0);
     if (me->mutex != NULL) {
         me->port->mutex_unlock(me->mutex);
     }
     return LMQTT_OK;
 }
 
+/* 结果是否属于指定配对：不但要有结果（got），结果槽还得署着本命令的配对字。
+   只认 got 会被上一条命令的迟到投递骗过 —— 接收侧写回前复核过配对字，但
+   复核与写回之间仍可能被抢占，所以命令侧必须自己再认领一次。 */
+static bool lmqtt_result_ready(const lmqtt_t *me, uint32_t pend)
+{
+    return me->cmd.got && me->cmd.delivered == pend;
+}
+
 int32_t lmqtt_cmd_finish(lmqtt_t *me, uint32_t ack_tmo, uint32_t urc_tmo,
                          lmqtt_cmd_out_t *out)
 {
     int32_t rc;
+    uint32_t pend;
     lmqtt_cmd_kind_t kind;
 
     if (me == NULL) {
         return LMQTT_ERR_PARAM;
     }
 
-    kind = (lmqtt_cmd_kind_t)me->cmd.kind;
+    pend = me->cmd.pending;             /* 本命令的配对字，全程不变 */
+    kind = LMQTT_PEND_KIND(pend);
 
     /* 第一步：等命令被接受。
        注意 `&& !me->cmd.got`：结果 URC 可能先于 OK 到达并把信号量消耗掉
        （cmd.got 已置位）。只看 sem_take 的返回值就报超时，会把已经到手的
        成功判成失败 —— 这是个窗口极小但确实存在的假超时。 */
-    if (me->port->sem_take(me->sem, ack_tmo) != 0 && !me->cmd.got) {
+    if (me->port->sem_take(me->sem, ack_tmo) != 0 &&
+        !lmqtt_result_ready(me, pend)) {
         LMQTT_LOG(LMQTT_LOG_WARN, "ack timeout");
         rc = LMQTT_ERR_TIMEOUT;
         goto out;
@@ -470,13 +499,23 @@ int32_t lmqtt_cmd_finish(lmqtt_t *me, uint32_t ack_tmo, uint32_t urc_tmo,
 
     /* 第二步：等结果 URC。
        实测 CONN 后无静默期，URC 可能先于/伴随 OK 到达，此时 cmd.got 已置位。 */
-    if (!me->cmd.got) {
+    if (!lmqtt_result_ready(me, pend)) {
         lmqtt_sem_reset(me);
-        if (me->port->sem_take(me->sem, urc_tmo) != 0 && !me->cmd.got) {
+        if (me->port->sem_take(me->sem, urc_tmo) != 0 &&
+            !lmqtt_result_ready(me, pend)) {
             LMQTT_LOG(LMQTT_LOG_WARN, "urc timeout");
             rc = LMQTT_ERR_TIMEOUT;
             goto out;
         }
+    }
+
+    /* 认领结果槽：走到这里 got 必已置位，但那份结果未必是本命令的
+       （见 lmqtt_result_ready）。署名不符说明本命令的结果始终没到，
+       按超时处理，好过把别人的结果当成自己的成功。 */
+    if (!lmqtt_result_ready(me, pend)) {
+        LMQTT_LOG(LMQTT_LOG_WARN, "stale result slot");
+        rc = LMQTT_ERR_TIMEOUT;
+        goto out;
     }
 
     if (out != NULL) {

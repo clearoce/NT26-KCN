@@ -418,6 +418,77 @@ static void test_unsubscribe_urc_spelling(void)
     CHECK(out.result == 0, "result 应为 0");
 }
 
+/* 配对字 (kind, msgid) 的原子发布语义
+ *
+ * mock 的 sem_take 在调用者线程内同步喂入模组响应（见 mock_sem_take 注释），
+ * 全程单线程、无抢占，因此结构上**无法**构造出「接收侧快照与命令侧发布真正
+ * 交错」的时序。这里退而守住新引入的不变量：配对字能整字编解码、abort 不
+ * 残留 msgid、begin 先复位结果槽再发布。
+ * 其中「abort 不残留 msgid」在旧实现（kind/msgid 是两个独立字段、abort 只清
+ * kind）上必然失败。 */
+static void test_cmd_pair_atomic(void)
+{
+    printf("test_cmd_pair_atomic\n");
+
+    CHECK(LMQTT_PEND_KIND(LMQTT_CMD_PEND(LMQTT_CMD_PUB, 5)) == LMQTT_CMD_PUB,
+          "配对字应能还原 kind");
+    CHECK(LMQTT_PEND_MSGID(LMQTT_CMD_PEND(LMQTT_CMD_PUB, 0xFFFFu)) == 0xFFFFu,
+          "msgid 边界值不应溢出到 kind 位");
+    CHECK(LMQTT_PEND_KIND(LMQTT_CMD_PEND(LMQTT_CMD_NONE, 0)) == LMQTT_CMD_NONE,
+          "空配对应能还原为 NONE");
+
+    setup();
+    CHECK(lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_PUB, 7) == LMQTT_OK, "begin 应成功");
+    CHECK(LMQTT_PEND_KIND(g_ctx.cmd.pending) == LMQTT_CMD_PUB,
+          "begin 应发布 kind");
+    CHECK(LMQTT_PEND_MSGID(g_ctx.cmd.pending) == 7, "begin 应发布 msgid");
+    CHECK(g_ctx.cmd.result == -1 && !g_ctx.cmd.got && g_ctx.cmd.delivered == 0,
+          "begin 应在发布配对字之前先复位结果槽");
+
+    lmqtt_cmd_abort(&g_ctx);
+    CHECK(LMQTT_PEND_KIND(g_ctx.cmd.pending) == LMQTT_CMD_NONE,
+          "abort 后 kind 应归 NONE");
+    CHECK(LMQTT_PEND_MSGID(g_ctx.cmd.pending) == 0,
+          "abort 后不应残留 msgid（残留会让下一条同 kind 命令认错结果）");
+
+    /* 无命令在途（配对为 NONE）时，结果 URC 不该被采纳，也不该唤醒命令侧 */
+    g_sem_count = 0;
+    lmqtt_rx_feed(&g_ctx, "+LMQTTPUB: 0,7,0\r\n", strlen("+LMQTTPUB: 0,7,0\r\n"));
+    CHECK(g_sem_count == 0, "无命令在途时结果 URC 不应唤醒命令侧");
+}
+
+/* 结果槽里署着上一条命令的结果时，当前命令不得认领它
+ *
+ * 对应接收侧被抢占的时序：它为命令 N 写好了结果，却在命令 N 超时放弃、
+ * 命令 N+1 已经开始之后才把这些字段写回。若只认 got，N+1 会把 N 的结果
+ * 当成自己的成功（result 被读成 0、rc 返回 OK）。 */
+static void test_stale_result_not_claimed(void)
+{
+    lmqtt_cmd_out_t out = { 0 };
+
+    printf("test_stale_result_not_claimed\n");
+    setup();
+
+    /* 先跑完一条命令，让结果槽里留下它署名的结果 */
+    reset_steps("OK\r\n", "+LMQTTPUB: 0,5,0\r\n", NULL);
+    CHECK(lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                         LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out,
+                         "AT+LMQTTPUB=...") == LMQTT_OK,
+          "第一条命令应成功");
+
+    /* 下一条命令开始之后，接收侧才把上一条的结果写回：got 被置位，
+       但署名（delivered）仍是上一条命令的配对字 */
+    lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_PUB, 6);
+    g_ctx.cmd.result    = LMQTT_RES_OK;
+    g_ctx.cmd.extra     = 0;
+    g_ctx.cmd.delivered = LMQTT_CMD_PEND(LMQTT_CMD_PUB, 5);
+    g_ctx.cmd.got       = true;
+
+    CHECK(lmqtt_cmd_finish(&g_ctx, LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out)
+              == LMQTT_ERR_TIMEOUT,
+          "署名不属于本命令的结果不得被认领");
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -439,6 +510,8 @@ int main(void)
     test_recv_topic_only_no_downlink();
     test_urc_only_no_false_timeout();
     test_unsubscribe_urc_spelling();
+    test_cmd_pair_atomic();
+    test_stale_result_not_claimed();
 
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

@@ -4,7 +4,7 @@
  * 用法概览：
  *   1. 宿主实现 lmqtt_port_t（串口写 + 互斥/信号量）
  *   2. lmqtt_init(&ctx, &port)
- *   3. 串口中断/接收任务里把收到的字节交给 lmqtt_rx_feed()
+ *   3. 串口接收任务里把收到的字节交给 lmqtt_rx_feed()
  *   4. 业务任务调用各指令 API（lmqtt_cfg_* / lmqtt_open() / lmqtt_pub() ...）
  *   5. 下行 payload 用 lmqtt_take_downlink() 轮询取走，在业务任务自己的栈上解析
  *
