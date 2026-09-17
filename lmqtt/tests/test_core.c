@@ -254,9 +254,9 @@ static void test_recv_cache_mode(void)
 static int g_stats_calls;
 static lmqtt_stats_t g_last_stat;
 
-static void on_stats(lmqtt_t *me, lmqtt_stats_t stat, int32_t ext, void *user)
+static void on_stats(lmqtt_t *self, lmqtt_stats_t stat, int32_t ext, void *user)
 {
-    (void)me; (void)ext; (void)user;
+    (void)self; (void)ext; (void)user;
     g_stats_calls++;
     g_last_stat = stat;
 }

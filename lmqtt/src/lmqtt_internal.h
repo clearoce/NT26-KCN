@@ -30,7 +30,7 @@ typedef struct lmqtt_cmd_out {
  * 返回值：LMQTT_OK / LMQTT_ERR_TIMEOUT / LMQTT_ERR_AT / LMQTT_ERR_PARAM
  * 注意：本函数不判定 <result> 的业务含义（各指令语义不同），由调用方判断。
  */
-int32_t lmqtt_cmd_exec(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid,
+int32_t lmqtt_cmd_exec(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid,
                        uint32_t ack_tmo, uint32_t urc_tmo,
                        lmqtt_cmd_out_t *out, const char *cmd);
 
@@ -44,21 +44,21 @@ int32_t lmqtt_cmd_exec(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid,
  *
  * 任一步失败后应直接返回；finish 会负责解锁。
  */
-int32_t lmqtt_cmd_begin(lmqtt_t *me, lmqtt_cmd_kind_t kind, uint16_t msgid);
-int32_t lmqtt_cmd_send(lmqtt_t *me, const void *buf, size_t len);
-int32_t lmqtt_cmd_finish(lmqtt_t *me, uint32_t ack_tmo, uint32_t urc_tmo,
+int32_t lmqtt_cmd_begin(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid);
+int32_t lmqtt_cmd_send(lmqtt_t *self, const void *buf, size_t len);
+int32_t lmqtt_cmd_finish(lmqtt_t *self, uint32_t ack_tmo, uint32_t urc_tmo,
                          lmqtt_cmd_out_t *out);
 /* 放弃事务（发送中途出错时调用），负责解锁 */
-int32_t lmqtt_cmd_abort(lmqtt_t *me);
+int32_t lmqtt_cmd_abort(lmqtt_t *self);
 
 /* 向串口写字符串（不补 CRLF），供分段发送拼装用 */
-int32_t lmqtt_cmd_send_str(lmqtt_t *me, const char *s);
+int32_t lmqtt_cmd_send_str(lmqtt_t *self, const char *s);
 
 /* 向下行缓冲投递一条 payload（由 RECV URC 调用）。data 不要求以 '\0' 结尾。 */
-void lmqtt_downlink_put(lmqtt_t *me, const char *data, size_t len);
+void lmqtt_downlink_put(lmqtt_t *self, const char *data, size_t len);
 
 /* STATS URC 分发（由 core 的行分发调用） */
-void lmqtt_stats_dispatch(lmqtt_t *me, lmqtt_stats_t stat, int32_t extend);
+void lmqtt_stats_dispatch(lmqtt_t *self, lmqtt_stats_t stat, int32_t extend);
 
 #ifdef __cplusplus
 }

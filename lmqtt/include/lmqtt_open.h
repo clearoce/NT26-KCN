@@ -22,7 +22,7 @@ extern "C" {
  *
  * 返回 LMQTT_OK / LMQTT_ERR_RESULT（打开失败，原因见 ext_out）/ 其它负错误码。
  */
-int32_t lmqtt_open(lmqtt_t *me, const char *host, uint16_t port,
+int32_t lmqtt_open(lmqtt_t *self, const char *host, uint16_t port,
                    lmqtt_open_ext_t *ext_out);
 
 #ifdef __cplusplus

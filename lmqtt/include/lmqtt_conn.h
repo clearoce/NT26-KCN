@@ -17,14 +17,14 @@ extern "C" {
 
 /*
  * 连接服务器。
- *   clientid / username / password  按服务器要求填写；username 为 NULL 时只带 clientid
+ *   imei / username / password  按服务器要求填写；username 为 NULL 时只带 imei
  *   rc_out  可为 NULL；回填服务器返回码（0=接受，其余为拒绝原因）
  *
  * 判定：<result> 为 0 或 1（重传，实测消息已到达）且 <ret_code> 为 0 才算成功。
  *      认证失败（ret_code=4）、未授权（5）等都会以 LMQTT_ERR_RESULT 返回。
  * 成功后实例转为已连接状态。
  */
-int32_t lmqtt_conn(lmqtt_t *me, const char *clientid,
+int32_t lmqtt_conn(lmqtt_t *self, const char *imei,
                    const char *username, const char *password,
                    lmqtt_conn_rc_t *rc_out);
 

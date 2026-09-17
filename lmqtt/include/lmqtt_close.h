@@ -17,7 +17,7 @@ extern "C" {
  * 关闭网络。返回 LMQTT_OK，或 LMQTT_ERR_RESULT（result=1 失败）及其它负错误码。
  * 无论模组是否回 ERROR 都会把本地连接状态置为未连接。
  */
-int32_t lmqtt_close(lmqtt_t *me);
+int32_t lmqtt_close(lmqtt_t *self);
 
 #ifdef __cplusplus
 }

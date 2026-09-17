@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-int32_t lmqtt_pub(lmqtt_t *me, uint16_t msgid, lmqtt_qos_t qos, bool retain,
+int32_t lmqtt_pub(lmqtt_t *self, uint16_t msgid, lmqtt_qos_t qos, bool retain,
                   const char *topic, const void *payload, size_t len,
                   uint32_t timeout_ms)
 {
@@ -15,7 +15,7 @@ int32_t lmqtt_pub(lmqtt_t *me, uint16_t msgid, lmqtt_qos_t qos, bool retain,
     lmqtt_cmd_out_t out = { 0 };
     int32_t         rc;
 
-    if (me == NULL || topic == NULL || (payload == NULL && len > 0)) {
+    if (self == NULL || topic == NULL || (payload == NULL && len > 0)) {
         return LMQTT_ERR_PARAM;
     }
     if (msgid == 0) {
@@ -31,30 +31,30 @@ int32_t lmqtt_pub(lmqtt_t *me, uint16_t msgid, lmqtt_qos_t qos, bool retain,
     /* 命令头以 '\"' 结尾，payload 紧随其后、最后补上闭合引号。
        分段发送是为了让大 payload 不必先整体拼进栈缓冲。 */
     rc = snprintf(head, sizeof(head), "AT+LMQTTPUB=%u,%u,%u,%u,\"%s\",%u,\"",
-                  (unsigned)me->tcid, (unsigned)msgid, (unsigned)qos,
+                  (unsigned)self->tcid, (unsigned)msgid, (unsigned)qos,
                   (unsigned)(retain ? 1 : 0), topic, (unsigned)len);
     if (rc < 0 || rc >= (int)sizeof(head)) {
         return LMQTT_ERR_OVERFLOW;
     }
 
-    rc = lmqtt_cmd_begin(me, LMQTT_CMD_PUB, msgid);
+    rc = lmqtt_cmd_begin(self, LMQTT_CMD_PUB, msgid);
     if (rc != LMQTT_OK) {
         return rc;
     }
 
-    rc = lmqtt_cmd_send_str(me, head);
+    rc = lmqtt_cmd_send_str(self, head);
     if (rc == LMQTT_OK && len > 0) {
-        rc = lmqtt_cmd_send(me, payload, len);
+        rc = lmqtt_cmd_send(self, payload, len);
     }
     if (rc == LMQTT_OK) {
-        rc = lmqtt_cmd_send(me, "\"\r\n", 3);
+        rc = lmqtt_cmd_send(self, "\"\r\n", 3);
     }
     if (rc != LMQTT_OK) {
-        lmqtt_cmd_abort(me);
+        lmqtt_cmd_abort(self);
         return rc;
     }
 
-    rc = lmqtt_cmd_finish(me, LMQTT_TMO_ACK,
+    rc = lmqtt_cmd_finish(self, LMQTT_TMO_ACK,
                           (timeout_ms > 0) ? timeout_ms : LMQTT_TMO_PUB, &out);
     if (rc != LMQTT_OK) {
         return rc;

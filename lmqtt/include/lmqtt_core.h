@@ -36,7 +36,7 @@ typedef enum lmqtt_cmd_kind {
  * 命令等待上下文（由引擎维护，指令层只读）。
  *
  * 并发约束：本结构由**命令任务**写、**接收任务**读，两者之间没有互斥 ——
- * 接收侧不能取 me->mutex：cmd_begin 持锁直到 cmd_abort，而 cmd_finish 在
+ * 接收侧不能取 self->mutex：cmd_begin 持锁直到 cmd_abort，而 cmd_finish 在
  * 持锁期间等待接收侧的 sem_give，接收侧再去 lock 必然死锁。所以配对信息
  * (kind, msgid) 必须能一次性原子读写：这里打包进单个 32 位字 pending，
  * 命令侧整字发布、接收侧整字快照。旧实现把 kind/msgid 拆成两个 volatile
@@ -72,7 +72,7 @@ typedef struct lmqtt lmqtt_t;
  * 上下文：lmqtt_rx_feed() 的调用者（通常是串口接收任务），必须尽快返回——
  *        不要在其中做解析、打印大段日志或申请内存。
  */
-typedef void (*lmqtt_stats_cb_t)(lmqtt_t *me, lmqtt_stats_t stat,
+typedef void (*lmqtt_stats_cb_t)(lmqtt_t *self, lmqtt_stats_t stat,
                                  int32_t extend, void *user);
 
 struct lmqtt {
@@ -114,10 +114,10 @@ struct lmqtt {
  * 初始化实例。port 必须在实例生命周期内保持有效（通常为静态常量）。
  * 本函数会通过 port 创建互斥与信号量，失败返回 LMQTT_ERR_NOMEM。
  */
-int32_t lmqtt_init(lmqtt_t *me, const lmqtt_port_t *port);
+int32_t lmqtt_init(lmqtt_t *self, const lmqtt_port_t *port);
 
 /* 释放 init 创建的同步原语。调用后实例不可再用。 */
-void lmqtt_deinit(lmqtt_t *me);
+void lmqtt_deinit(lmqtt_t *self);
 
 /*
  * 喂入串口收到的原始字节。
@@ -131,7 +131,7 @@ void lmqtt_deinit(lmqtt_t *me);
  * 内部按 CRLF 组行，分发 URC / 唤醒命令等待。可逐字节多次调用。
  * 返回 LMQTT_OK；入参非法返回 LMQTT_ERR_PARAM。
  */
-int32_t lmqtt_rx_feed(lmqtt_t *me, const void *buf, size_t len);
+int32_t lmqtt_rx_feed(lmqtt_t *self, const void *buf, size_t len);
 
 /*
  * 取走一条下行 payload（业务任务轮询调用），无数据返回 NULL。
@@ -141,16 +141,16 @@ int32_t lmqtt_rx_feed(lmqtt_t *me, const void *buf, size_t len);
  * 把解析（如 cJSON）压在那里会爆栈——本项目在旧实现上已实际复现过此类死机。
  * 解析应当在调用本函数那个任务自己的栈上完成。
  */
-const char *lmqtt_take_downlink(lmqtt_t *me);
+const char *lmqtt_take_downlink(lmqtt_t *self);
 
 /* 累计被丢弃的下行条数（未及时取走或超出 LMQTT_DOWN_MAX） */
-uint32_t lmqtt_downlink_drops(const lmqtt_t *me);
+uint32_t lmqtt_downlink_drops(const lmqtt_t *self);
 
 /* 当前是否已连接（以 CONN 成功 / STATS 断线通知为准） */
-bool lmqtt_is_connected(const lmqtt_t *me);
+bool lmqtt_is_connected(const lmqtt_t *self);
 
 /* 注册 STATS 回调（可为 NULL 注销）。cb 为 NULL 时也可用 lmqtt_is_connected 轮询。 */
-void lmqtt_set_stats_cb(lmqtt_t *me, lmqtt_stats_cb_t cb, void *user);
+void lmqtt_set_stats_cb(lmqtt_t *self, lmqtt_stats_cb_t cb, void *user);
 
 #ifdef __cplusplus
 }

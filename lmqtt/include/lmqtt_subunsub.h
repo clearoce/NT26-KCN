@@ -20,7 +20,7 @@ extern "C" {
  *
  * 判定：<result> 为 0 才算成功。
  */
-int32_t lmqtt_subscribe(lmqtt_t *me, uint16_t msgid,
+int32_t lmqtt_subscribe(lmqtt_t *self, uint16_t msgid,
                         const char *topic, lmqtt_qos_t qos);
 
 /*
@@ -28,7 +28,7 @@ int32_t lmqtt_subscribe(lmqtt_t *me, uint16_t msgid,
  * 手册示例中退订的完成 URC 拼写为 +LMQTTUNSUNSUB（比订阅少一个 B），
  * 引擎已兼容两种拼写。
  */
-int32_t lmqtt_unsubscribe(lmqtt_t *me, uint16_t msgid, const char *topic);
+int32_t lmqtt_unsubscribe(lmqtt_t *self, uint16_t msgid, const char *topic);
 
 #ifdef __cplusplus
 }

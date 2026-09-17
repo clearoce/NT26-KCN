@@ -33,7 +33,7 @@ extern "C" {
  * 注意：payload 会被逐字节原样发出（不做转义）。发布 JSON 这类含引号的内容
  *       在实测中可正常送达，无需额外处理。
  */
-int32_t lmqtt_pub(lmqtt_t *me, uint16_t msgid, lmqtt_qos_t qos, bool retain,
+int32_t lmqtt_pub(lmqtt_t *self, uint16_t msgid, lmqtt_qos_t qos, bool retain,
                   const char *topic, const void *payload, size_t len,
                   uint32_t timeout_ms);
 

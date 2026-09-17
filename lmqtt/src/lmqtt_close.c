@@ -6,23 +6,23 @@
 
 #include <stdio.h>
 
-int32_t lmqtt_close(lmqtt_t *me)
+int32_t lmqtt_close(lmqtt_t *self)
 {
     char            cmd[32];
     lmqtt_cmd_out_t out = { 0 };
     int32_t         rc;
 
-    if (me == NULL) {
+    if (self == NULL) {
         return LMQTT_ERR_PARAM;
     }
 
-    snprintf(cmd, sizeof(cmd), "AT+LMQTTCLOSE=%u", (unsigned)me->tcid);
+    snprintf(cmd, sizeof(cmd), "AT+LMQTTCLOSE=%u", (unsigned)self->tcid);
 
-    rc = lmqtt_cmd_exec(me, LMQTT_CMD_CLOSE, 0,
+    rc = lmqtt_cmd_exec(self, LMQTT_CMD_CLOSE, 0,
                         LMQTT_TMO_ACK, LMQTT_TMO_CLOSE, &out, cmd);
 
     /* 无论模组怎么回，本地都不该再认为自己连着 */
-    me->connected = false;
+    self->connected = false;
 
     if (rc != LMQTT_OK) {
         return rc;
