@@ -30,7 +30,8 @@ typedef enum lmqtt_data_format {
 /* 配置接收数据的读取模式（直吐 / 缓存，见 lmqtt_cache_mode_t） */
 int32_t lmqtt_cfg_cache(lmqtt_t *self, lmqtt_cache_mode_t mode);
 
-/* 配置会话类型：0=断开后服务器保留订阅与 QoS1 下行队列；1=清除（Clean） */
+/* 配置会话类型（手册）：0=客户端断开连接后，服务器存储该客户端的订阅消息（默认）；
+   1=服务器删除客户端之前保留的任何消息，此连接状态为 Clean */
 int32_t lmqtt_cfg_session(lmqtt_t *self, uint8_t clean_session);
 
 /* 配置保活时间（秒）。0 表示不断开；手册范围 0~3600，默认 120。
@@ -53,7 +54,9 @@ int32_t lmqtt_cfg_recv_mode(lmqtt_t *self, lmqtt_data_format_t fmt, bool show_le
 /* 配置 keepalive 期间是否快速进入 IDLE 省电模式 */
 int32_t lmqtt_cfg_raimode(lmqtt_t *self, uint8_t mode);
 
-/* 配置 SSL 模式（当前项目用明文 1883，如需 8883 需先上传 CA） */
+/* 配置 MQTT SSL 模式（手册）：0=使用普通 TCP 连接；1=使用 SSL TCP 安全连接。
+   ssl_ctx_id 为 ssl 的上下文 ID，取值 0~5。
+   当前项目用明文 1883，如需 8883 需先上传 CA */
 int32_t lmqtt_cfg_sslenable(lmqtt_t *self, bool enable, uint8_t ssl_ctx_id);
 
 /*

@@ -27,7 +27,7 @@
 #include "lmqtt_pub.h"
 #include "lmqtt_urc.h"
 /* 以下章节待实现（阶段 3）：
-   lmqtt_disc.h     AT+LMQTTDISC
+   lmqtt_disc.h     AT+LMQTTDISC（手册：<result> 0=成功、1=失败；<extend> 1=链路已经被重置）
    lmqtt_pubex.h    AT+LMQTTPUBEX
    lmqtt_read.h     AT+LMQTTREAD
  */

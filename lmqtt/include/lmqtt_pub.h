@@ -3,7 +3,8 @@
  *
  * 手册最大响应时间 30 秒，受网络状态影响。
  * 本文件实现「携带数据的 inline 模式」；透传模式（不带 <msg>，等待 '>' 提示符
- * 后分段装载）用于超过 LMQTT_PUB_INLINE_MAX 的报文，属后续阶段。
+ * 后分段装载；手册：数据长度不超过 8000 字节）用于超过 LMQTT_PUB_INLINE_MAX
+ * 的报文，属后续阶段。
  */
 #ifndef LMQTT_PUB_H
 #define LMQTT_PUB_H 1
@@ -15,7 +16,9 @@
 extern "C" {
 #endif
 
-/* 手册：携带数据模式下有效数据长度 0~1024 字节 */
+/* 手册：在携带数据的模式时，有效数据长度范围 0-1024。（当携带双引号的字符串
+   格式时不超过 1027 字节长度，其他模式下不超过 1024 字节）
+   本库以带引号字符串发布，上限保守取 1024。 */
 #define LMQTT_PUB_INLINE_MAX    1024U
 
 /*
@@ -24,7 +27,7 @@ extern "C" {
  *   qos         QoS 等级（0/1/2）
  *   retain      服务器是否保留该消息
  *   topic       主题，最长 LMQTT_TOPIC_MAX 字节
- *   payload/len 消息内容；len 不得超过 LMQTT_PUB_INLINE_MAX
+ *   payload/len 消息内容；len 不得超过 LMQTT_PUB_INLINE_MAX（见上方手册说明）
  *   timeout_ms  等待结果 URC 的毫秒数；传 0 使用 LMQTT_TMO_PUB
  *
  * 判定：<result> 为 0（已收到服务器 ACK）或 1（手册：发送成功了，但响应错误 ACK）

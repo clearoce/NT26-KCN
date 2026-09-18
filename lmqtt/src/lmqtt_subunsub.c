@@ -44,11 +44,11 @@ static int32_t subunsub(lmqtt_t *self, uint8_t subflag, uint16_t msgid,
 int32_t lmqtt_subscribe(lmqtt_t *self, uint16_t msgid,
                         const char *topic, lmqtt_qos_t qos)
 {
-    return subunsub(self, 0, msgid, topic, qos);
+    return subunsub(self, 0, msgid, topic, qos);    /* 手册：<subflag> 0=订阅 */
 }
 
 int32_t lmqtt_unsubscribe(lmqtt_t *self, uint16_t msgid, const char *topic)
 {
-    /* 退订时 qos 参数被模组忽略 */
+    /* 手册：<subflag> 1=取消订阅；退订时 <qos> 参数被模组忽略 */
     return subunsub(self, 1, msgid, topic, LMQTT_QOS0);
 }

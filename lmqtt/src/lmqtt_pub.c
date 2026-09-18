@@ -25,7 +25,8 @@ int32_t lmqtt_pub(lmqtt_t *self, uint16_t msgid, lmqtt_qos_t qos, bool retain,
         return LMQTT_ERR_OVERFLOW;
     }
     if (len > LMQTT_PUB_INLINE_MAX) {
-        return LMQTT_ERR_OVERFLOW;          /* 需走透传模式 */
+        /* 超 inline 上限（本库取 1024；手册允许带引号字符串到 1027），需走透传模式 */
+        return LMQTT_ERR_OVERFLOW;
     }
 
     /* 命令头以 '\"' 结尾，payload 紧随其后、最后补上闭合引号。
@@ -60,7 +61,9 @@ int32_t lmqtt_pub(lmqtt_t *self, uint16_t msgid, lmqtt_qos_t qos, bool retain,
         return rc;
     }
 
-    /* result: 0=发送成功且收到服务器 ACK，1=发送成功了但响应错误 ACK，2=发送失败 */
+    /* result（手册）：0=数据包发送成功且接收到服务器的ACK（当 <qos>=0 时发布了数据，
+       则无需ACK）；1=发送成功了，但是响应错误ACK；2=发送失败。
+       <extend>（手册：当 <result>=1 时显示扩展错误信息）：6=数据包发送失败、7=参数错误。 */
     if (out.result != 0 && out.result != 1) {
         return LMQTT_ERR_RESULT;
     }

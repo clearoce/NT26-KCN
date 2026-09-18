@@ -17,7 +17,7 @@ extern "C" {
 /*
  * 打开网络。
  *   host  服务器地址，IP 或域名，最长 LMQTT_HOST_MAX 字节
- *   port  服务器端口
+ *   port  服务器端口（手册：1~65535，整型）
  *   ext_out  可为 NULL；失败时回填扩展原因（DNS 失败 / PDP 失败 / 标识符被占用…）
  *
  * 判定：<result> 为 0（打开网络成功）才算成功；-1 表示打开失败，原因见 ext_out（手册）。

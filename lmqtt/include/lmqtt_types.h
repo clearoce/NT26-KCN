@@ -55,7 +55,7 @@ extern "C" {
 #define LMQTT_TMO_PUBEX     30000U
 #define LMQTT_TMO_READ      5000U
 #define LMQTT_TMO_CLOSE     5000U       /* 需关闭 TCP，留足 */
-#define LMQTT_TMO_DISC      5000U
+#define LMQTT_TMO_DISC      5000U       /* 手册：最大响应时间 5 秒 */
 
 /* 命令被接受（OK/ERROR）的等待窗口。手册未规定，实测约 7ms */
 #define LMQTT_TMO_ACK       2000U
@@ -104,7 +104,7 @@ typedef enum lmqtt_sub_ext {
     LMQTT_SUB_EXT_PARAM     = 7,    /* 参数错误 */
 } lmqtt_sub_ext_t;
 
-/* CONN 的 <ret_code>（服务器拒绝原因） */
+/* CONN 的 <ret_code>（手册：连接状态返回码） */
 typedef enum lmqtt_conn_rc {
     LMQTT_CONN_ACCEPTED         = 0,    /* 接受连接 */
     LMQTT_CONN_BAD_PROTOCOL     = 1,    /* 不接受的协议版本 */
@@ -142,7 +142,10 @@ typedef enum lmqtt_stats {
     LMQTT_STATS_MQTT_REFUSED = 15,  /* MQTT 连接已拒绝，原因见 extend */
 } lmqtt_stats_t;
 
-/* STATS=15 时 <extend> 表示的拒绝原因（同 CONN 的 ret_code 语义） */
+/* 手册：当 <stats>=15 时，表示 MQTT 连接已拒绝原因
+   （1 不支持的协议版本；2 不合格的客户端标识符；3 服务端不可用；
+     4 无效的用户名或密码；5 未授权；6-256 保留）。
+   注：手册此处措辞与 CONN 的 <ret_code> 并不相同，本库复用同一枚举只为省一次定义。 */
 typedef lmqtt_conn_rc_t lmqtt_refuse_reason_t;
 
 #ifdef __cplusplus
