@@ -137,12 +137,12 @@ static void test_pub_ok(void)
           "应写出完整命令并补 CRLF");
 }
 
-/* PUB 结果为重传（手册 result=1）——引擎不判定业务语义，原样回填 */
-static void test_pub_retrans(void)
+/* PUB 的 result=1（手册：发送成功了，但响应错误 ACK）——引擎不判定业务语义，原样回填 */
+static void test_pub_ack_err(void)
 {
     lmqtt_cmd_out_t out = { 0 };
 
-    printf("test_pub_retrans\n");
+    printf("test_pub_ack_err\n");
     setup();
     reset_steps("OK\r\n", "+LMQTTPUB: 0,7,1,6\r\n", NULL);
 
@@ -150,7 +150,7 @@ static void test_pub_retrans(void)
                                 LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
 
     CHECK(rc == LMQTT_OK, "命令应成功");
-    CHECK(out.result == LMQTT_RES_RETRANS, "result 应为 1");
+    CHECK(out.result == 1, "result 应为 1（PUB：已发出但 ACK 异常）");
     CHECK(out.extra == 6, "extend 应为 6");
 }
 
@@ -495,7 +495,7 @@ int main(void)
 {
     printf("=== lmqtt core tests ===\n");
     test_pub_ok();
-    test_pub_retrans();
+    test_pub_ack_err();
     test_stale_msgid_ignored();
     test_urc_before_ok();
     test_rejected();

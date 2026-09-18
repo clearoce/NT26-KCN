@@ -60,7 +60,7 @@ int32_t lmqtt_pub(lmqtt_t *self, uint16_t msgid, lmqtt_qos_t qos, bool retain,
         return rc;
     }
 
-    /* result: 0=发送成功且收到服务器 ACK，1=重传（实测已到达），2=发送失败 */
+    /* result: 0=发送成功且收到服务器 ACK，1=发送成功了但响应错误 ACK，2=发送失败 */
     if (out.result != 0 && out.result != 1) {
         return LMQTT_ERR_RESULT;
     }

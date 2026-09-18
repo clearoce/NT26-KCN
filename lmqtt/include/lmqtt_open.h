@@ -20,7 +20,10 @@ extern "C" {
  *   port  服务器端口
  *   ext_out  可为 NULL；失败时回填扩展原因（DNS 失败 / PDP 失败 / 标识符被占用…）
  *
- * 返回 LMQTT_OK / LMQTT_ERR_RESULT（打开失败，原因见 ext_out）/ 其它负错误码。
+ * 判定：<result> 为 0（打开网络成功）才算成功；-1 表示打开失败，原因见 ext_out（手册）。
+ * 失败时返回 LMQTT_ERR_RESULT；其它负错误码见 lmqtt_types.h。
+ *
+ * 注意：本命令的失败值是 -1，不是其它命令所用的 1 或 2。
  */
 int32_t lmqtt_open(lmqtt_t *self, const char *host, uint16_t port,
                    lmqtt_open_ext_t *ext_out);

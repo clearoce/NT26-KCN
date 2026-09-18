@@ -20,7 +20,8 @@ extern "C" {
  *   imei / username / password  按服务器要求填写；username 为 NULL 时只带 imei
  *   rc_out  可为 NULL；回填服务器返回码（0=接受，其余为拒绝原因）
  *
- * 判定：<result> 为 0 或 1（重传，实测消息已到达）且 <ret_code> 为 0 才算成功。
+ * 判定：<result> 为 0 或 1（手册：1=数据包重传；实测此时消息仍会到达）
+ *      且 <ret_code> 为 0 才算成功。
  *      认证失败（ret_code=4）、未授权（5）等都会以 LMQTT_ERR_RESULT 返回。
  * 成功后实例转为已连接状态。
  */

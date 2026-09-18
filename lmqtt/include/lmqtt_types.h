@@ -79,16 +79,14 @@ typedef enum lmqtt_qos {
     LMQTT_QOS2 = 2,     /* 正好一次 */
 } lmqtt_qos_t;
 
-/* 通用 <result>（OPEN/CLOSE/CONN/SUBUNSUB/PUB/DISC 共用语义） */
-typedef enum lmqtt_result {
-    LMQTT_RES_OK        = 0,    /* 成功；QoS1/2 时表示已收到服务器 ACK */
-    LMQTT_RES_RETRANS   = 1,    /* 数据包重传（实测：消息已到达 broker，非失败） */
-    LMQTT_RES_FAIL      = 2,    /* 发送失败 */
-
-    /* SUBUNSUB 的 result 只有 0/1，1 表示失败 */
-    LMQTT_SUB_RES_OK    = 0,
-    LMQTT_SUB_RES_FAIL  = 1,
-} lmqtt_result_t;
+/* <result> 里唯一通用的是 0 —— 所有命令中它都表示成功。
+   其余取值**各命令语义不同**（手册），故不在此处枚举，见各命令头文件：
+     lmqtt_pub.h      1=发送成功了，但响应错误 ACK；2=发送失败
+     lmqtt_conn.h     1=数据包重传；2=发送失败（另需 <ret_code>=0 才算连上）
+     lmqtt_open.h     0=成功；-1=失败（原因见 <extend>）
+     lmqtt_close.h    0=成功；1=失败
+     lmqtt_subunsub.h 0=成功；1=失败 */
+#define LMQTT_RES_OK    0   /* 成功；QoS1/2 时表示已收到服务器 ACK（QoS0 无需 ACK） */
 
 /* OPEN 失败时的 <extend>（手册 result=-1 时） */
 typedef enum lmqtt_open_ext {

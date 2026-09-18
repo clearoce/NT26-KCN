@@ -230,13 +230,13 @@ static void test_pub_json_payload(void)
     expect_tx(want, "JSON payload 不应被转义或截断");
 }
 
-static void test_pub_result_retrans(void)
+static void test_pub_result_ack_err(void)
 {
-    printf("test_pub_result_retrans\n");
-    /* result=1 是重传，实测消息已到达 broker，应视为成功 */
+    printf("test_pub_result_ack_err\n");
+    /* result=1（手册：发送成功了，但响应错误 ACK）应视为成功 */
     setup("OK\r\n+LMQTTPUB: 0,9,1,6\r\n");
     expect_rc(lmqtt_pub(&g_ctx, 9, LMQTT_QOS1, false, "t", "x", 1, 0),
-              LMQTT_OK, "result=1（重传）应视为成功");
+              LMQTT_OK, "result=1（已发出但 ACK 异常）应视为成功");
 
     setup("OK\r\n+LMQTTPUB: 0,9,2\r\n");
     expect_rc(lmqtt_pub(&g_ctx, 9, LMQTT_QOS1, false, "t", "x", 1, 0),
@@ -287,7 +287,7 @@ int main(void)
     test_subunsub();
     test_pub();
     test_pub_json_payload();
-    test_pub_result_retrans();
+    test_pub_result_ack_err();
     test_pub_oversize();
     test_close();
     test_stats_helper();

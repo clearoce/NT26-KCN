@@ -48,7 +48,7 @@ int32_t lmqtt_conn(lmqtt_t *self, const char *imei,
         *rc_out = (lmqtt_conn_rc_t)out.extra;
     }
 
-    /* result: 0=已收到服务器 ACK，1=重传（实测消息已到达），2=发送失败 */
+    /* result: 0=已收到服务器 ACK，1=数据包重传（手册；实测此时消息仍会到达），2=发送失败 */
     if (out.result != 0 && out.result != 1) {
         self->connected = false;
         return LMQTT_ERR_RESULT;

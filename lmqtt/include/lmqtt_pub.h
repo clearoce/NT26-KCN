@@ -27,7 +27,7 @@ extern "C" {
  *   payload/len 消息内容；len 不得超过 LMQTT_PUB_INLINE_MAX
  *   timeout_ms  等待结果 URC 的毫秒数；传 0 使用 LMQTT_TMO_PUB
  *
- * 判定：<result> 为 0（已收到服务器 ACK）或 1（重传，实测消息已到达 broker）
+ * 判定：<result> 为 0（已收到服务器 ACK）或 1（手册：发送成功了，但响应错误 ACK）
  *      均视为成功；2 返回 LMQTT_ERR_RESULT。
  *
  * 注意：payload 会被逐字节原样发出（不做转义）。发布 JSON 这类含引号的内容
