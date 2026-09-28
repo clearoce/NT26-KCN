@@ -102,6 +102,14 @@ struct lmqtt {
     volatile bool   down_ready;
     uint32_t        down_drops;     /* 因未及时取走/超长而丢弃的条数 */
 
+    /* ---- 故障计数（只增不减，业务侧差分取用，见 lmqtt_err_counters）----
+       这几类事件原先只落一行日志、丢完即忘，业务侧取不到 ⇒ 无法成为判据。
+       库不判定它们"是哪一类故障"（那是宿主的知识，例如同一份超长行在 OTA
+       接收期与非接收期归属不同码），只负责如实计数。 */
+    uint32_t        line_drops;     /* 组帧行超 LMQTT_LINE_MAX，整行丢弃 */
+    uint32_t        unmatched_urcs; /* +LMQTT 开头但本引擎不认识的 URC */
+    uint32_t        bad_pub_acks;   /* PUB 的 <result>=1：发送成功但响应错误 ACK */
+
     /* ---- 状态 ---- */
     bool            connected;
     uint8_t         tcid;           /* tcpconnectID，固定 LMQTT_TCID_DEFAULT */
@@ -145,6 +153,18 @@ const char *lmqtt_take_downlink(lmqtt_t *self);
 
 /* 累计被丢弃的下行条数（未及时取走或超出 LMQTT_DOWN_MAX） */
 uint32_t lmqtt_downlink_drops(const lmqtt_t *self);
+
+/* 故障计数快照。四个计数只增不减，业务侧每轮取一次做差分即可得到"本轮新增几条"。
+   做成"一次取走一组"而不是四个访问器：四个计数的用途与采样节奏完全相同，
+   分开取只会让调用侧把同一段差分样板抄四遍。 */
+typedef struct lmqtt_err_counters {
+    uint32_t down_drops;        /* 下行收到但丢弃 */
+    uint32_t line_drops;        /* 组帧行超长被整行丢弃 */
+    uint32_t unmatched_urcs;    /* 不认识的 +LMQTT URC */
+    uint32_t bad_pub_acks;      /* PUB <result>=1 */
+} lmqtt_err_counters_t;
+
+void lmqtt_get_err_counters(const lmqtt_t *self, lmqtt_err_counters_t *out);
 
 /* 当前是否已连接（以 CONN 成功 / STATS 断线通知为准） */
 bool lmqtt_is_connected(const lmqtt_t *self);

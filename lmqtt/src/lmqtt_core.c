@@ -86,6 +86,22 @@ uint32_t lmqtt_downlink_drops(const lmqtt_t *self)
     return (self != NULL) ? self->down_drops : 0U;
 }
 
+void lmqtt_get_err_counters(const lmqtt_t *self, lmqtt_err_counters_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    if (self == NULL) {
+        memset(out, 0, sizeof(*out));
+        return;
+    }
+
+    out->down_drops     = self->down_drops;
+    out->line_drops     = self->line_drops;
+    out->unmatched_urcs = self->unmatched_urcs;
+    out->bad_pub_acks   = self->bad_pub_acks;
+}
+
 /* ------------------------------------------------------------------ */
 /* STATS 分发 */
 
@@ -283,6 +299,7 @@ static void lmqtt_line_dispatch(lmqtt_t *self, const char *line, size_t len)
             return;
         }
 
+        self->unmatched_urcs++;
         LMQTT_LOG(LMQTT_LOG_WARN, "unmatched urc: %s", line);
         return;
     }
@@ -371,6 +388,7 @@ int32_t lmqtt_rx_feed(lmqtt_t *self, const void *buf, size_t len)
         if (c == '\n') {
             if (self->line_over) {
                 /* 超长行整行丢弃：截断后的 URC 只会被误解析 */
+                self->line_drops++;
                 LMQTT_LOG(LMQTT_LOG_WARN, "line >%u B dropped",
                           (unsigned)(LMQTT_LINE_MAX - 1));
             } else if (self->line_len > 0) {

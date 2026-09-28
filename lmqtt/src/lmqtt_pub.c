@@ -67,5 +67,14 @@ int32_t lmqtt_pub(lmqtt_t *self, uint16_t msgid, lmqtt_qos_t qos, bool retain,
     if (out.result != 0 && out.result != 1) {
         return LMQTT_ERR_RESULT;
     }
+
+    /* result=1 语义上是**失败**（"发送成功了，但是响应错误 ACK"），库却按成功返回 ——
+       一条数据在云端就没了，而设备本地报成功、不重传，双方对不上账。
+       改返回值会动到既有发布路径的分类与重试，故先只计数交给宿主判；
+       计数只增不减，宿主差分取用（见 lmqtt_get_err_counters）。 */
+    if (out.result == 1) {
+        self->bad_pub_acks++;
+    }
+
     return LMQTT_OK;
 }
