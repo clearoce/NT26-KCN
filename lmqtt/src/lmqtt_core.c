@@ -86,6 +86,21 @@ uint32_t lmqtt_downlink_drops(const lmqtt_t *self)
     return (self != NULL) ? self->down_drops : 0U;
 }
 
+uint8_t lmqtt_last_cmd_stage(const lmqtt_t *self)
+{
+    return (self != NULL) ? (uint8_t)self->cmd.stage : (uint8_t)LMQTT_STAGE_NONE;
+}
+
+int32_t lmqtt_last_cmd_result(const lmqtt_t *self)
+{
+    return (self != NULL) ? self->cmd.result : -1;
+}
+
+int32_t lmqtt_last_cmd_extra(const lmqtt_t *self)
+{
+    return (self != NULL) ? self->cmd.extra : 0;
+}
+
 void lmqtt_get_err_counters(const lmqtt_t *self, lmqtt_err_counters_t *out)
 {
     if (out == NULL) {
@@ -488,6 +503,7 @@ int32_t lmqtt_cmd_begin(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid)
     self->cmd.got       = false;
     self->cmd.acked     = false;
     self->cmd.rejected  = false;
+    self->cmd.stage     = LMQTT_STAGE_NONE;   /* 只在这里复位，abort 不动它 */
 
     /* 开窗必须排在上面那组复位**之后**：若先置 busy，一条在这个缝里到达的 OK
        会把 acked 置真，紧接着被复位抹掉 —— 命令就丢掉了自己的受理。 */
@@ -553,6 +569,7 @@ int32_t lmqtt_cmd_finish(lmqtt_t *self, uint32_t ack_tmo, uint32_t urc_tmo,
     if (self->port->sem_take(self->sem, ack_tmo) != 0 &&
         !lmqtt_result_ready(self, pend)) {
         LMQTT_LOG(LMQTT_LOG_WARN, "ack timeout");
+        self->cmd.stage = LMQTT_STAGE_ACK_TMO;
         rc = LMQTT_ERR_TIMEOUT;
         goto out;
     }
@@ -574,6 +591,7 @@ int32_t lmqtt_cmd_finish(lmqtt_t *self, uint32_t ack_tmo, uint32_t urc_tmo,
         if (self->port->sem_take(self->sem, urc_tmo) != 0 &&
             !lmqtt_result_ready(self, pend)) {
             LMQTT_LOG(LMQTT_LOG_WARN, "urc timeout");
+            self->cmd.stage = LMQTT_STAGE_URC_TMO;
             rc = LMQTT_ERR_TIMEOUT;
             goto out;
         }
@@ -584,6 +602,7 @@ int32_t lmqtt_cmd_finish(lmqtt_t *self, uint32_t ack_tmo, uint32_t urc_tmo,
        按超时处理，好过把别人的结果当成自己的成功。 */
     if (!lmqtt_result_ready(self, pend)) {
         LMQTT_LOG(LMQTT_LOG_WARN, "stale result slot");
+        self->cmd.stage = LMQTT_STAGE_STALE_SLOT;
         rc = LMQTT_ERR_TIMEOUT;
         goto out;
     }

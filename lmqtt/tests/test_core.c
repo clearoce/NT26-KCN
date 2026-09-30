@@ -600,6 +600,69 @@ static void test_ack_attribution_counters(void)
     CHECK(ec.early_acks == 0, "正常时序不得计 early_acks");
 }
 
+/* 命令失败的「阶段」（Step 2 / T2.1）
+ *
+ * 三处**不同**的失败在返回值上折叠成同一个 LMQTT_ERR_TIMEOUT，调用方分不出是哪一段
+ * 坏的。本用例守住 stage 能区分它们 —— 这是把"L14 只告诉你去查发布"升级为"直接告诉
+ * 你是没受理还是受理了没完成"的唯一依据。
+ *
+ * ⚠️ PC 端 LMQTT_LOG 是空宏（见 lmqtt_port.h）⇒ **不能靠日志文案断言**，必须读 stage。 */
+static void test_cmd_fail_stage(void)
+{
+    lmqtt_cmd_out_t out = { 0 };
+    int32_t         rc;
+
+    printf("test_cmd_fail_stage\n");
+
+    /* ① 等受理超时：模组从头到尾没搭理 */
+    setup();
+    reset_steps(NULL, NULL, NULL);
+    rc = lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                        LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(rc == LMQTT_ERR_TIMEOUT, "无任何响应应超时");
+    CHECK(lmqtt_last_cmd_stage(&g_ctx) == LMQTT_STAGE_ACK_TMO,
+          "无响应应记为「等受理超时」");
+
+    /* ② 等结果 URC 超时：受理了（OK 到了）但结果始终没来 */
+    setup();
+    reset_steps("OK\r\n", NULL, NULL);
+    rc = lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                        LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(rc == LMQTT_ERR_TIMEOUT, "只有 OK、没有结果 URC 应超时");
+    CHECK(lmqtt_last_cmd_stage(&g_ctx) == LMQTT_STAGE_URC_TMO,
+          "有 OK 无结果应记为「等结果超时」");
+
+    /* ③ 结果槽被占：第二个 OK 把第二步的信号量消耗掉、结果始终没进槽
+          ⇒ 既不是"没受理"也不是"没完成"，而是并发窗口 */
+    setup();
+    reset_steps("OK\r\n", "OK\r\n", NULL);
+    rc = lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                        LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(rc == LMQTT_ERR_TIMEOUT, "两个 OK、无结果 URC 应超时");
+    CHECK(lmqtt_last_cmd_stage(&g_ctx) == LMQTT_STAGE_STALE_SLOT,
+          "第二个 OK 越过第二步后应记为「结果槽被占」");
+
+    /* ④ 正向对照：成功的命令不得留下失败阶段（否则 stage 会退化成噪声） */
+    setup();
+    reset_steps("OK\r\n", "+LMQTTPUB: 0,5,0\r\n", NULL);
+    rc = lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                        LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(rc == LMQTT_OK, "正常命令应成功");
+    CHECK(lmqtt_last_cmd_stage(&g_ctx) == LMQTT_STAGE_NONE,
+          "成功的命令不得留下失败阶段");
+
+    /* ⑤ begin 复位 stage —— 上一条失败不得污染下一条 */
+    setup();
+    reset_steps(NULL, NULL, NULL);
+    (void)lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                         LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(lmqtt_last_cmd_stage(&g_ctx) == LMQTT_STAGE_ACK_TMO, "先失败一次");
+    lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_PUB, 6);
+    CHECK(lmqtt_last_cmd_stage(&g_ctx) == LMQTT_STAGE_NONE,
+          "begin 应复位 stage（否则读到的永远是上一条的下场）");
+    lmqtt_cmd_abort(&g_ctx);
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -624,6 +687,7 @@ int main(void)
     test_cmd_pair_atomic();
     test_stale_result_not_claimed();
     test_ack_attribution_counters();
+    test_cmd_fail_stage();
 
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

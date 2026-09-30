@@ -274,6 +274,53 @@ static void test_stats_helper(void)
               "服务器断开需重连");
 }
 
+/* 结果 URC 的 <extend> / <result> 必须能被读出来（Step 2 / T2.2、T2.3，兼 T2.4 的接出半边）
+ *
+ * 命令层各自把内部的 out 吃掉后只返回一个 rc，<extend> 就此丢失 —— 而同一 rc 下不同
+ * extend 的现场动作完全不同（PUB：6 = 数据包发送失败，查链路/模组；7 = 参数错误，
+ * 查固件自身配置）。本用例守住"它读得出来"，并守住超时时的复位语义。 */
+static void test_result_extend_exposed(void)
+{
+    lmqtt_conn_rc_t crc = { 0 };
+
+    printf("test_result_extend_exposed\n");
+
+    /* SUB：extend 是手册给的失败细分原因，原先整条丢弃 */
+    setup("OK\r\n+LMQTTSUBUNSUB: 0,9,1,6\r\n");
+    expect_rc(lmqtt_subscribe(&g_ctx, 9, "t/x", LMQTT_QOS1),
+              LMQTT_ERR_RESULT, "订阅失败应报错");
+    expect_rc(lmqtt_last_cmd_result(&g_ctx), 1, "应能读出 result=1");
+    expect_rc(lmqtt_last_cmd_extra(&g_ctx), 6, "应能读出 SUB 的 extend=6");
+
+    /* PUB：result=1 + extend=6（发送成功但 ACK 异常，原因是数据包发送失败） */
+    setup("OK\r\n+LMQTTPUB: 0,9,1,6\r\n");
+    expect_rc(lmqtt_pub(&g_ctx, 9, LMQTT_QOS1, false, "t", "x", 1, 0),
+              LMQTT_OK, "result=1 仍按成功返回（既有语义不变）");
+    expect_rc(lmqtt_last_cmd_extra(&g_ctx), 6, "应能读出 PUB 的 extend=6");
+
+    /* PUB：extend=7（参数错误 —— 现场动作与 6 完全不同：查固件自身配置） */
+    setup("OK\r\n+LMQTTPUB: 0,9,1,7\r\n");
+    (void)lmqtt_pub(&g_ctx, 9, LMQTT_QOS1, false, "t", "x", 1, 0);
+    expect_rc(lmqtt_last_cmd_extra(&g_ctx), 7, "应能区分出 extend=7");
+
+    /* CONN / CLOSE 同型 —— 通用 getter 一并覆盖，且**不改变任何既有行为** */
+    setup("OK\r\n+LMQTTCONN: 0,0,4\r\n");
+    (void)lmqtt_conn(&g_ctx, "id", "u", "p", &crc);
+    expect_rc(lmqtt_last_cmd_extra(&g_ctx), 4, "应能读出 CONN 的 ret_code=4");
+
+    setup("OK\r\n+LMQTTCLOSE: 0,1,6\r\n");
+    (void)lmqtt_close(&g_ctx);
+    expect_rc(lmqtt_last_cmd_extra(&g_ctx), 6, "应能读出 CLOSE 的 extend=6");
+
+    /* 超时（根本没有结果 URC）时必须是**复位值**，不能残留上一条的 extend ——
+       否则读到的就是一个张冠李戴的值，比读不到更糟 */
+    setup("OK\r\n");                    /* 只有 OK；mock 喂一次后自清，第二步等不到东西 */
+    expect_rc(lmqtt_subscribe(&g_ctx, 10, "t/x", LMQTT_QOS1),
+              LMQTT_ERR_TIMEOUT, "无结果 URC 应超时");
+    expect_rc(lmqtt_last_cmd_extra(&g_ctx), 0, "超时时 extend 应为复位值 0");
+    expect_rc(lmqtt_last_cmd_result(&g_ctx), -1, "超时时 result 应为复位值 -1");
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -290,6 +337,7 @@ int main(void)
     test_pub_result_ack_err();
     test_pub_oversize();
     test_close();
+    test_result_extend_exposed();
     test_stats_helper();
 
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);

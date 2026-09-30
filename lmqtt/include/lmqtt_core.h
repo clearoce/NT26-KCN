@@ -33,6 +33,25 @@ typedef enum lmqtt_cmd_kind {
 } lmqtt_cmd_kind_t;
 
 /*
+ * 命令失败的「阶段」。
+ *
+ * 存在的理由：三处**不同的**失败 —— 等受理超时、等结果 URC 超时、结果槽被别的
+ * 配对字占着 —— 在返回值上**折叠成同一个** LMQTT_ERR_TIMEOUT，调用方分不出是哪
+ * 一段坏的。三者的现场含义完全不同（本地段没通 / 已通但对面没完成 / 并发窗口），
+ * 所以单列一个阶段值。
+ *
+ * ⚠️ 它只**记录**，不改变任何 rc 与日志。
+ * 其余失败本来就有各自的 rc（模组 ERROR → LMQTT_ERR_AT；结果非成功值 →
+ * LMQTT_ERR_RESULT），不需要靠 stage 区分，故不在此列。
+ */
+typedef enum lmqtt_cmd_stage {
+    LMQTT_STAGE_NONE = 0,       /* 未失败 / 尚未执行过命令 */
+    LMQTT_STAGE_ACK_TMO,        /* 第一步等受理超时 —— 模组没搭理（本地段嫌疑） */
+    LMQTT_STAGE_URC_TMO,        /* 第二步等结果 URC 超时 —— 受理了但没完成（模组/空口嫌疑） */
+    LMQTT_STAGE_STALE_SLOT,     /* 结果槽署着别的配对字 —— 本命令的结果始终没到 */
+} lmqtt_cmd_stage_t;
+
+/*
  * 命令等待上下文（由引擎维护，指令层只读）。
  *
  * 并发约束：本结构由**命令任务**写、**接收任务**读，两者之间没有互斥 ——
@@ -75,6 +94,11 @@ typedef struct lmqtt_cmd_ctx {
        回执**。这类被计成 lmqtt_err_counters 的 early_*，是"回执串门"唯一的直接
        证据（stray_ 只说明窗外有回执，extra_ 只说明同一窗来了两条）。 */
     volatile bool     written;
+
+    /* 最近一次命令的失败阶段（见 lmqtt_cmd_stage_t）。
+       **刻意不被 cmd_abort 清掉** —— abort 在每条命令结束时都会跑，清掉就没法事后
+       读"上一次为什么失败"。只在 cmd_begin 复位。 */
+    volatile uint8_t  stage;
 } lmqtt_cmd_ctx_t;
 
 /* 配对字的编解码：kind 占高 8 位、msgid 占低 16 位，整体装得进一个字。 */
@@ -209,6 +233,22 @@ typedef struct lmqtt_err_counters {
 } lmqtt_err_counters_t;
 
 void lmqtt_get_err_counters(const lmqtt_t *self, lmqtt_err_counters_t *out);
+
+/* 最近一次命令的失败阶段（见 lmqtt_cmd_stage_t）。
+   用途：把"超时"这个粗类拆成"本地段没通 / 已通但没完成 / 并发窗口"三选一。
+   读到的值在**下一条命令开始**时才变，可以事后读。self 为 NULL 返回 LMQTT_STAGE_NONE。 */
+uint8_t lmqtt_last_cmd_stage(const lmqtt_t *self);
+
+/* 最近一条命令的 <result> / <extend>（结果 URC 的原始值）。
+   为什么需要：SUB / PUB 等命令各自把内部的 out 吃掉后只返回一个 rc，
+   <extend>（手册给了细分原因）就此丢失 —— 而同一 rc 下不同 extend 的现场动作
+   完全不同（例：PUB 的 6 = 数据包发送失败，查链路/模组；7 = 参数错误，查固件配置）。
+   语义：**只有结果 URC 真的投递过**才有值；没投递时 result 为 -1、extra 为 0
+   （cmd_begin 的复位值）⇒ "超时"与"模组真的回了 -1"不会混淆。
+   ⚠️ 属"最近一次"语义 —— 要跟具体命令对应，须在该命令返回后**立刻**读
+   （下一条命令的 begin 会复位它们）。 */
+int32_t lmqtt_last_cmd_result(const lmqtt_t *self);
+int32_t lmqtt_last_cmd_extra(const lmqtt_t *self);
 
 /* 当前是否已连接（以 CONN 成功 / STATS 断线通知为准） */
 bool lmqtt_is_connected(const lmqtt_t *self);
