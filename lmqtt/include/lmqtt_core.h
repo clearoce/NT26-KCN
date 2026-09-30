@@ -90,9 +90,13 @@ typedef struct lmqtt_cmd_ctx {
     volatile bool     busy;
 
     /* 命令**已完整写出**（cmd_exec 里两次 send 都已返回，才会进入 cmd_finish）。
-       开窗到写出完成之间到达的 OK —— 模组那时还没收到命令 —— **必然不是本命令的
-       回执**。这类被计成 lmqtt_err_counters 的 early_*，是"回执串门"唯一的直接
-       证据（stray_ 只说明窗外有回执，extra_ 只说明同一窗来了两条）。 */
+
+       它是**栅栏**：在"开窗"到"写出完成"之间到达的 OK —— 模组那时还没收到命令 ——
+       **必然不是本命令的回执**，一律只计 `early_*`，**不置位、不放行信号量**。
+       不加这道栅栏，一条外来的 OK 就能把一条根本没被受理的命令判成成功。
+
+       ⚠️ 开窗条件依赖"send 返回 = 末字节已进寄存器"（当前 `IOT_UART_TX_INT = 0`，
+       轮询发送）。**启用 TX_INT 后必须改判"TX 流空 / TC"**，否则窗口开早、真 OK 被挡。 */
     volatile bool     written;
 
     /* 最近一次命令的失败阶段（见 lmqtt_cmd_stage_t）。

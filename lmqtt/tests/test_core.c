@@ -663,6 +663,56 @@ static void test_cmd_fail_stage(void)
     lmqtt_cmd_abort(&g_ctx);
 }
 
+/* 栅栏（T1.2）：**命令还没写完**时到达的 OK/ERROR 不得当成受理
+ *
+ * ⚠️ 这条用例的价值在于**旧实现必失败**：加栅栏之前，"begin 之后立刻喂一个 OK"
+ * 会被当成"命令已被受理"，`finish` 于是返回成功 —— 而模组那时根本没收到命令。
+ * 这不是理论问题：AT 通道被 durian 的 at_client 与 lmqtt 共用，固件每 5 s 自发
+ * 一条 AT+CSQ，它的收尾 OK 也会送进这个引擎。 */
+static void test_early_ack_fenced(void)
+{
+    lmqtt_err_counters_t ec;
+    lmqtt_cmd_out_t      out = { 0 };
+    int32_t              rc;
+
+    printf("test_early_ack_fenced\n");
+
+    /* ① 写出之前到达的 OK：不认 */
+    setup();
+    reset_steps(NULL, NULL, NULL);
+    lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_NONE, 0);   /* CFG 的形态：只有 ack 段 */
+    g_sem_count = 0;
+    CHECK(!g_ctx.cmd.written, "begin 之后、写出完成之前 written 应为假");
+    lmqtt_rx_feed(&g_ctx, "OK\r\n", 4);
+    CHECK(g_sem_count == 0, "栅栏内到达的 OK 不得放行信号量");
+    CHECK(!g_ctx.cmd.acked, "栅栏内到达的 OK 不得置 acked");
+    rc = lmqtt_cmd_finish(&g_ctx, LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out);
+    CHECK(rc == LMQTT_ERR_TIMEOUT,
+          "只靠栅栏内那条 OK 不得判成功（旧实现会返回 LMQTT_OK）");
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.early_acks == 1, "应计 early_acks");
+
+    /* ② 同样的一条 ERROR 也不认 */
+    setup();
+    reset_steps(NULL, NULL, NULL);
+    lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_NONE, 0);
+    g_sem_count = 0;
+    lmqtt_rx_feed(&g_ctx, "ERROR\r\n", 7);
+    CHECK(g_sem_count == 0, "栅栏内到达的 ERROR 不得放行信号量");
+    CHECK(!g_ctx.cmd.rejected, "栅栏内到达的 ERROR 不得置 rejected");
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.early_errs == 1, "应计 early_errs");
+
+    /* ③ 正向对照：命令**写完以后**的 OK 照常受理 —— 栅栏不能连真回执一起挡掉 */
+    setup();
+    reset_steps("OK\r\n", "+LMQTTPUB: 0,5,0\r\n", NULL);
+    rc = lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                        LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(rc == LMQTT_OK, "写完之后的 OK 必须照常受理（栅栏不能挡真回执）");
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.early_acks == 0, "正常时序不得计 early_acks");
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -688,6 +738,7 @@ int main(void)
     test_stale_result_not_claimed();
     test_ack_attribution_counters();
     test_cmd_fail_stage();
+    test_early_ack_fenced();
 
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

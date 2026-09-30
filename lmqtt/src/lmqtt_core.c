@@ -337,10 +337,19 @@ static void lmqtt_line_dispatch(lmqtt_t *self, const char *line, size_t len)
        供宿主判断这类串扰的真实频率。
        **置位与 sem_give 的行为与加计数之前完全一致。** */
     if (len == 2 && memcmp(line, "OK", 2) == 0) {
+        /* 栅栏（见 lmqtt_cmd_ctx_t.written）：命令**还没写完**时到达的 OK，
+           模组那时还没收到命令 ⇒ **必非本命令的受理**。只计数，不置位、不放行
+           信号量 —— 否则一条外来的 OK 就能把一条根本没被受理的命令判成成功。
+           ⚠️ 开窗条件必须是"命令已真正写出"：当前 IOT_UART_TX_INT = 0（轮询发送），
+           send 返回即末字节进寄存器，故 cmd_finish 入口置 written 成立；
+           **将来若启用 TX_INT**（send 变成"塞流即返回"），这里必须改判"TX 流空/TC"，
+           否则窗口开早、真 OK 反被栅栏挡掉。 */
+        if (self->cmd.busy && !self->cmd.written) {
+            self->early_acks++;
+            return;
+        }
         if (self->cmd.busy) {
-            if (!self->cmd.written) {
-                self->early_acks++;          /* 命令还没写完就来了 ⇒ 必非本命令的 */
-            } else if (self->cmd.acked) {
+            if (self->cmd.acked) {
                 self->extra_acks++;          /* 本窗第 2 条及以后 */
             }
         } else {
@@ -351,10 +360,12 @@ static void lmqtt_line_dispatch(lmqtt_t *self, const char *line, size_t len)
         return;
     }
     if (strncmp(line, "ERROR", 5) == 0 || strncmp(line, "+CME ERROR", 10) == 0) {
+        if (self->cmd.busy && !self->cmd.written) {
+            self->early_errs++;              /* 同上：写出去之前来的 ERROR 也不认 */
+            return;
+        }
         if (self->cmd.busy) {
-            if (!self->cmd.written) {
-                self->early_errs++;
-            } else if (self->cmd.rejected) {
+            if (self->cmd.rejected) {
                 self->extra_errs++;
             }
         } else {
