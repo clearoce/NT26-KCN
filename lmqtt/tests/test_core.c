@@ -489,6 +489,117 @@ static void test_stale_result_not_claimed(void)
           "署名不属于本命令的结果不得被认领");
 }
 
+/* 回执归属的计量（2026-09-30 追加）
+ *
+ * AT 的 OK/ERROR **不带命令标识**，所以"这份回执属于哪条命令"在协议层就做不到。
+ * 引擎能回答的只有"当时有没有命令窗口"，据此把回执分成两类：
+ *   stray_* —— 窗口外路过（无命令在途）；extra_* —— 同一窗口内第 2 条及以后。
+ * 这几个计数是判断"要不要给命令窗口加栅栏"的唯一依据；数错了，后续决策就
+ * 建立在一个假数字上，所以这里把每条语义边界都钉住。 */
+static void test_ack_attribution_counters(void)
+{
+    lmqtt_err_counters_t ec;
+    lmqtt_cmd_out_t      out = { 0 };
+    int32_t              rc  = LMQTT_ERR_PARAM;
+
+    printf("test_ack_attribution_counters\n");
+
+    /* 1) CFG 窗口内的 OK 不得计成 stray —— 这就是 cmd.busy 存在的理由。
+          CFG 的配对字（kind=NONE、msgid=0）字面值就是 0，与 abort 写回的空闲态
+          **值碰撞**；用 pending 判窗口的写法会把 CFG 的整个窗口当成窗外。 */
+    setup();
+    CHECK(!g_ctx.cmd.busy, "未开窗时 busy 应为假");
+    CHECK(lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_NONE, 0) == LMQTT_OK, "begin 应成功");
+    CHECK(g_ctx.cmd.pending == 0, "CFG 的配对字字面值就是 0（所以 pending 判不了窗口）");
+    CHECK(g_ctx.cmd.busy, "begin 应开窗");
+    lmqtt_rx_feed(&g_ctx, "OK\r\n", 4);
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.stray_oks == 0, "CFG 窗口内的 OK 不得计成 stray_oks");
+    CHECK(ec.extra_acks == 0, "本窗第 1 条 OK 不算 extra");
+    lmqtt_cmd_abort(&g_ctx);
+    CHECK(!g_ctx.cmd.busy, "abort 应关窗");
+
+    /* 2) 窗口外到达的回执 */
+    setup();
+    lmqtt_rx_feed(&g_ctx, "OK\r\n", 4);
+    lmqtt_rx_feed(&g_ctx, "ERROR\r\n", 7);
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.stray_oks == 1, "无窗口在途的 OK 应计 stray_oks");
+    CHECK(ec.stray_errs == 1, "无窗口在途的 ERROR 应计 stray_errs");
+    CHECK(ec.extra_acks == 0 && ec.extra_errs == 0,
+          "窗口外的行不得计进 extra_*（那是窗内语义）");
+
+    /* 3) 同一窗口内第 2 条及以后（走真实时序：begin → 写出 → finish） */
+    setup();
+    reset_steps("OK\r\n", "OK\r\n+LMQTTPUB: 0,5,0\r\n", NULL);
+    rc = lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                        LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(rc == LMQTT_OK, "窗内多一条 OK 不应改变命令结果");
+    CHECK(out.result == LMQTT_RES_OK, "结果仍应来自真正的结果 URC");
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.extra_acks == 1, "本窗第 2 条 OK 应计 extra_acks");
+    CHECK(ec.early_acks == 0, "这条 OK 在写出完成后到达，不得计 early_acks");
+    CHECK(ec.stray_oks == 0, "它在窗口内，不得计进 stray_oks");
+
+    setup();
+    reset_steps("OK\r\n", "ERROR\r\nERROR\r\n+LMQTTPUB: 0,5,0\r\n", NULL);
+    rc = lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                        LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(rc == LMQTT_OK,
+          "urc 段混进的 ERROR 不改变结果（rejected 只在 ack 段之后看一次）");
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.extra_errs == 1, "本窗第 2 条 ERROR 应计 extra_errs");
+    CHECK(ec.stray_errs == 0, "它在窗口内，不得计进 stray_errs");
+
+    /* 4) 窗外的 OK 不影响随后的命令（begin 会复位窗口与信号量） */
+    setup();
+    lmqtt_rx_feed(&g_ctx, "OK\r\n", 4);
+    reset_steps("OK\r\n", "+LMQTTPUB: 0,5,0\r\n", NULL);
+    rc = lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                        LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(rc == LMQTT_OK, "窗外的 OK 不应影响随后的命令");
+    CHECK(out.result == LMQTT_RES_OK, "结果应来自本命令自己的结果 URC");
+
+    /* 5) 无关行（durian 的 AT 响应、模组启动横幅）只计 rx_other，不算回执 */
+    setup();
+    lmqtt_rx_feed(&g_ctx, "+CSQ: 29,0\r\n", strlen("+CSQ: 29,0\r\n"));
+    lmqtt_rx_feed(&g_ctx, "^boot.rom'v\r\n", strlen("^boot.rom'v\r\n"));
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.rx_other == 2, "既非 +LMQTT 也非终结符的行应计 rx_other");
+    CHECK(ec.stray_oks == 0 && ec.stray_errs == 0, "它们不是回执，不得计进 stray_*");
+
+    /* 6) 配对字不符的迟到结果 URC */
+    setup();
+    lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_PUB, 5);
+    lmqtt_rx_feed(&g_ctx, "+LMQTTPUB: 0,99,0\r\n", strlen("+LMQTTPUB: 0,99,0\r\n"));
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.stale_urcs == 1, "msgid 不符的结果 URC 应计 stale_urcs");
+    lmqtt_cmd_abort(&g_ctx);
+
+    /* 7) 开窗之后、命令**写出之前**到达的 OK —— 模组那时还没收到命令，
+          所以这条回执**必然不是本命令的**。这是"串门"唯一的直接证据，
+          与 extra_*（同窗第 2 条）和 stray_*（窗外）都不同。 */
+    setup();
+    lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_PUB, 5);
+    CHECK(!g_ctx.cmd.written, "begin 之后、写出完成之前 written 应为假");
+    lmqtt_rx_feed(&g_ctx, "OK\r\n", 4);
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.early_acks == 1, "命令写出前到达的 OK 应计 early_acks");
+    CHECK(ec.extra_acks == 0, "early 不是本窗第 2 条，不得计进 extra_acks");
+    CHECK(ec.stray_oks == 0, "它在窗口内，不得计进 stray_oks");
+    lmqtt_cmd_abort(&g_ctx);
+
+    /* 8) 正常时序（先写完再等）不得计 early —— 守住上面那条的正向对照，
+          否则 early_* 会退化成"每个窗口都 +1"的噪声计数器 */
+    setup();
+    reset_steps("OK\r\n", "+LMQTTPUB: 0,5,0\r\n", NULL);
+    rc = lmqtt_cmd_exec(&g_ctx, LMQTT_CMD_PUB, 5,
+                        LMQTT_TMO_ACK, LMQTT_TMO_PUB, &out, "AT+LMQTTPUB=...");
+    CHECK(rc == LMQTT_OK, "正常命令应成功");
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.early_acks == 0, "正常时序不得计 early_acks");
+}
+
 /* ------------------------------------------------------------------ */
 
 int main(void)
@@ -512,6 +623,7 @@ int main(void)
     test_unsubscribe_urc_spelling();
     test_cmd_pair_atomic();
     test_stale_result_not_claimed();
+    test_ack_attribution_counters();
 
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

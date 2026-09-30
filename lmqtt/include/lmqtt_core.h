@@ -57,6 +57,24 @@ typedef struct lmqtt_cmd_ctx {
     volatile bool     got;          /* 结果 URC 已到达 */
     volatile bool     acked;        /* 命令已被接受（收到 OK） */
     volatile bool     rejected;     /* 命令被拒绝（ERROR / +CME ERROR） */
+
+    /* 命令窗口标志：命令侧在 cmd_begin 置位、cmd_abort 清位，接收侧据此把一条
+       OK/ERROR 分成"窗内的回执"与"窗外路过的行"（两类分别计数，见
+       lmqtt_err_counters 的 stray_ 与 extra_ 两组计数）。
+
+       **不能用 pending 代替** —— CFG 的配对字字面值就是 0（lmqtt_cfg.c 传
+       kind=NONE、msgid=0），与 cmd_abort 写回的空闲态**值碰撞**，那种写法会把
+       CFG 的整个窗口都当成窗外。
+
+       注意 OK/ERROR 本身**不带命令标识**，AT 协议层就没法配对 ⇒ 这里只能
+       回答"当时是否有窗口"，回答不了"这份回执属于哪条命令"。 */
+    volatile bool     busy;
+
+    /* 命令**已完整写出**（cmd_exec 里两次 send 都已返回，才会进入 cmd_finish）。
+       开窗到写出完成之间到达的 OK —— 模组那时还没收到命令 —— **必然不是本命令的
+       回执**。这类被计成 lmqtt_err_counters 的 early_*，是"回执串门"唯一的直接
+       证据（stray_ 只说明窗外有回执，extra_ 只说明同一窗来了两条）。 */
+    volatile bool     written;
 } lmqtt_cmd_ctx_t;
 
 /* 配对字的编解码：kind 占高 8 位、msgid 占低 16 位，整体装得进一个字。 */
@@ -110,6 +128,19 @@ struct lmqtt {
     uint32_t        unmatched_urcs; /* +LMQTT 开头但本引擎不认识的 URC */
     uint32_t        bad_pub_acks;   /* PUB 的 <result>=1：发送成功但响应错误 ACK */
 
+    /* ---- 回执归属的计量（见 lmqtt_cmd_ctx_t.busy）----
+       这六项只增不减、由接收侧（lmqtt_rx_feed 的调用者）累加，业务侧差分取用。
+       它们回答的不是"哪条回执串了门"（那做不到），而是"窗外漏进多少、窗内多来多少"
+       —— 够不够频繁，是决定要不要做窗口栅栏的唯一依据。 */
+    uint32_t        stray_oks;      /* 无窗口在途时到达的 OK */
+    uint32_t        stray_errs;     /* 无窗口在途时到达的 ERROR / +CME ERROR */
+    uint32_t        extra_acks;     /* 同一窗口内第 2 条及以后的 OK */
+    uint32_t        extra_errs;     /* 同一窗口内第 2 条及以后的 ERROR */
+    uint32_t        early_acks;     /* 命令尚未完整写出时到达的 OK（必非本命令的） */
+    uint32_t        early_errs;     /* 同上，ERROR / +CME ERROR */
+    uint32_t        stale_urcs;     /* 配对字不符、被丢弃的结果 URC */
+    uint32_t        rx_other;       /* 既非 +LMQTT 也非 OK/ERROR 的行（诊断用，非故障） */
+
     /* ---- 状态 ---- */
     bool            connected;
     uint8_t         tcid;           /* tcpconnectID，固定 LMQTT_TCID_DEFAULT */
@@ -162,6 +193,19 @@ typedef struct lmqtt_err_counters {
     uint32_t line_drops;        /* 组帧行超长被整行丢弃 */
     uint32_t unmatched_urcs;    /* 不认识的 +LMQTT URC */
     uint32_t bad_pub_acks;      /* PUB <result>=1 */
+
+    /* ---- 回执归属的计量（2026-09-30 追加）----
+       AT 的 OK/ERROR 不带命令标识，所以"这份回执属于哪条命令"在协议层就做不到，
+       只能计量。stray_* 与 extra_* 一起回答"窗外漏进多少、窗内多来多少"。
+       rx_other 是诊断用计数（durian 的 AT 响应行都会落进这里），**不是故障**。 */
+    uint32_t stray_oks;         /* 无窗口在途时到达的 OK */
+    uint32_t stray_errs;        /* 无窗口在途时到达的 ERROR / +CME ERROR */
+    uint32_t extra_acks;        /* 同一窗口内第 2 条及以后的 OK */
+    uint32_t extra_errs;        /* 同一窗口内第 2 条及以后的 ERROR */
+    uint32_t early_acks;        /* 命令尚未完整写出时到达的 OK（必非本命令的） */
+    uint32_t early_errs;        /* 同上，ERROR / +CME ERROR */
+    uint32_t stale_urcs;        /* 配对字不符、被丢弃的结果 URC */
+    uint32_t rx_other;          /* 既非 +LMQTT 也非 OK/ERROR 的行 */
 } lmqtt_err_counters_t;
 
 void lmqtt_get_err_counters(const lmqtt_t *self, lmqtt_err_counters_t *out);

@@ -100,6 +100,15 @@ void lmqtt_get_err_counters(const lmqtt_t *self, lmqtt_err_counters_t *out)
     out->line_drops     = self->line_drops;
     out->unmatched_urcs = self->unmatched_urcs;
     out->bad_pub_acks   = self->bad_pub_acks;
+
+    out->stray_oks      = self->stray_oks;
+    out->stray_errs     = self->stray_errs;
+    out->extra_acks     = self->extra_acks;
+    out->extra_errs     = self->extra_errs;
+    out->early_acks     = self->early_acks;
+    out->early_errs     = self->early_errs;
+    out->stale_urcs     = self->stale_urcs;
+    out->rx_other       = self->rx_other;
 }
 
 /* ------------------------------------------------------------------ */
@@ -246,6 +255,7 @@ static bool lmqtt_match_result_urc(lmqtt_t *self, const char *line, size_t len)
             }
             /* 迟到/串扰的 URC 不得当作当前命令的结果 */
             if (ckind == e->kind && cmid != 0 && mid != (unsigned)cmid) {
+                self->stale_urcs++;
                 LMQTT_LOG(LMQTT_LOG_DEBUG, "stale %s msgid=%u (expect %u)",
                           e->prefix, mid, (unsigned)cmid);
                 return true;
@@ -304,18 +314,47 @@ static void lmqtt_line_dispatch(lmqtt_t *self, const char *line, size_t len)
         return;
     }
 
-    /* 2. 命令响应终结符 */
+    /* 2. 命令响应终结符。
+       AT 的 OK/ERROR **不带命令标识** ⇒ 这里做不到"认领"：只要一条 OK 到达，
+       它就被算给当时在途的命令（cmd_finish 只做 sem_take，不读归属）。
+       本分支额外把"窗外到达的"与"窗内多来的"分别记进计数器（见
+       lmqtt_cmd_ctx_t.busy 与 lmqtt_err_counters 的 stray_ 与 extra_ 两组计数），
+       供宿主判断这类串扰的真实频率。
+       **置位与 sem_give 的行为与加计数之前完全一致。** */
     if (len == 2 && memcmp(line, "OK", 2) == 0) {
+        if (self->cmd.busy) {
+            if (!self->cmd.written) {
+                self->early_acks++;          /* 命令还没写完就来了 ⇒ 必非本命令的 */
+            } else if (self->cmd.acked) {
+                self->extra_acks++;          /* 本窗第 2 条及以后 */
+            }
+        } else {
+            self->stray_oks++;
+        }
         self->cmd.acked = true;
         lmqtt_sem_give(self);
         return;
     }
     if (strncmp(line, "ERROR", 5) == 0 || strncmp(line, "+CME ERROR", 10) == 0) {
+        if (self->cmd.busy) {
+            if (!self->cmd.written) {
+                self->early_errs++;
+            } else if (self->cmd.rejected) {
+                self->extra_errs++;
+            }
+        } else {
+            self->stray_errs++;
+        }
         self->cmd.rejected = true;
         lmqtt_sem_give(self);
         return;
     }
 
+    /* 既不是 +LMQTT URC、也不是终结符 —— 宿主那边 durian 库的 AT 响应行
+       （+CSQ / +CEREG / +CGPADDR / +CCLK …）与模组启动横幅都落这里。
+       只计数：它**不是故障**，不要接进任何错误码；它的用途是让"库到底看见了多少
+       无关行"能与命令窗口对齐。 */
+    self->rx_other++;
     LMQTT_LOG(LMQTT_LOG_DEBUG, "rx: %s", line);
 }
 
@@ -450,6 +489,10 @@ int32_t lmqtt_cmd_begin(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid)
     self->cmd.acked     = false;
     self->cmd.rejected  = false;
 
+    /* 开窗必须排在上面那组复位**之后**：若先置 busy，一条在这个缝里到达的 OK
+       会把 acked 置真，紧接着被复位抹掉 —— 命令就丢掉了自己的受理。 */
+    self->cmd.written   = false;                         /* 命令尚未写出 */
+    self->cmd.busy      = true;                          /* 开窗（见 lmqtt_cmd_ctx_t） */
     self->cmd.pending   = LMQTT_CMD_PEND(kind, msgid);   /* 单次对齐 32 位发布 */
 
     lmqtt_sem_reset(self);
@@ -461,6 +504,10 @@ int32_t lmqtt_cmd_abort(lmqtt_t *self)
     if (self == NULL) {
         return LMQTT_ERR_PARAM;
     }
+
+    /* 先关窗、再清配对字：反过来的话，这两步之间到达的 OK 会被算成"窗内"
+       （而窗口其实已经结束），把它计进 extra_* 会虚增串扰。 */
+    self->cmd.busy    = false;
 
     /* 整字清除：kind 归 NONE 的同时把 msgid 一并清零。msgid 残留会让同 kind
        的下一条命令期间，接收侧的快照命中上一条的 msgid，把迟到 URC 当成
@@ -490,6 +537,11 @@ int32_t lmqtt_cmd_finish(lmqtt_t *self, uint32_t ack_tmo, uint32_t urc_tmo,
     if (self == NULL) {
         return LMQTT_ERR_PARAM;
     }
+
+    /* 走到本函数说明 cmd_exec 里两次 send 都已返回（发送失败会直接 abort 掉，
+       不会到这里）⇒ 现在起到达的 OK 才**有可能**是本命令的。此前到达的算
+       early_*（见 lmqtt_cmd_ctx_t.written）。 */
+    self->cmd.written = true;
 
     pend = self->cmd.pending;             /* 本命令的配对字，全程不变 */
     kind = LMQTT_PEND_KIND(pend);
