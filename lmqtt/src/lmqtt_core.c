@@ -300,6 +300,26 @@ static bool lmqtt_match_result_urc(lmqtt_t *self, const char *line, size_t len)
 }
 
 /* ------------------------------------------------------------------ */
+/* 透传响应收集 */
+
+/* 追加一行到调用方给出的缓冲。放不下就**整行丢弃** —— 截断的半行会被调用方
+   误解析，那比少一行更难查。 */
+static void lmqtt_raw_append(lmqtt_t *self, const char *line, size_t len)
+{
+    size_t need = len + 1;      /* 外加行尾的 '\0' */
+
+    if (self->cmd.raw_out == NULL ||
+        self->cmd.raw_len + need > self->cmd.raw_outsz) {
+        return;
+    }
+
+    memcpy(self->cmd.raw_out + self->cmd.raw_len, line, len);
+    self->cmd.raw_len += len;
+    self->cmd.raw_out[self->cmd.raw_len++] = '\0';
+    self->cmd.raw_lines++;
+}
+
+/* ------------------------------------------------------------------ */
 /* 行分发 */
 
 static void lmqtt_line_dispatch(lmqtt_t *self, const char *line, size_t len)
@@ -376,11 +396,17 @@ static void lmqtt_line_dispatch(lmqtt_t *self, const char *line, size_t len)
         return;
     }
 
-    /* 既不是 +LMQTT URC、也不是终结符 —— 宿主那边 durian 库的 AT 响应行
-       （+CSQ / +CEREG / +CGPADDR / +CCLK …）与模组启动横幅都落这里。
-       只计数：它**不是故障**，不要接进任何错误码；它的用途是让"库到底看见了多少
-       无关行"能与命令窗口对齐。 */
+    /* 既不是 +LMQTT URC、也不是终结符。两类落这里：
+         - 透传命令（LMQTT_CMD_RAW）的响应行（+CSQ / +CEREG / +CGPADDR / +LCCID …）
+           ⇒ 按窗口归属就近交给调用方；
+         - 其余（模组启动横幅等）⇒ 只计数。
+
+       两者都计入 rx_other：它回答的是"库里看见了多少非 +LMQTT 的行"，
+       引入 RAW 之后这个口径不该变，否则它作为诊断量的可比性就断了。 */
     self->rx_other++;
+    if (LMQTT_PEND_KIND(self->cmd.pending) == LMQTT_CMD_RAW) {
+        lmqtt_raw_append(self, line, len);
+    }
     LMQTT_LOG(LMQTT_LOG_DEBUG, "rx: %s", line);
 }
 
@@ -494,7 +520,8 @@ void lmqtt_set_stats_cb(lmqtt_t *self, lmqtt_stats_cb_t cb, void *user)
 /* ------------------------------------------------------------------ */
 /* 命令执行 */
 
-int32_t lmqtt_cmd_begin(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid)
+static int32_t cmd_begin_common(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid,
+                                char *raw_out, size_t raw_outsz)
 {
     if (self == NULL) {
         return LMQTT_ERR_PARAM;
@@ -516,6 +543,13 @@ int32_t lmqtt_cmd_begin(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid)
     self->cmd.rejected  = false;
     self->cmd.stage     = LMQTT_STAGE_NONE;   /* 只在这里复位，abort 不动它 */
 
+    /* 透传落点：必须排在下面的 pending **之前** —— 接收侧是"先读 pending
+       认出 RAW、再去写 raw_out"，反序会让它拿上一轮遗留的指针写。 */
+    self->cmd.raw_out   = raw_out;
+    self->cmd.raw_outsz = raw_outsz;
+    self->cmd.raw_len   = 0;
+    self->cmd.raw_lines = 0;
+
     /* 开窗必须排在上面那组复位**之后**：若先置 busy，一条在这个缝里到达的 OK
        会把 acked 置真，紧接着被复位抹掉 —— 命令就丢掉了自己的受理。 */
     self->cmd.written   = false;                         /* 命令尚未写出 */
@@ -524,6 +558,16 @@ int32_t lmqtt_cmd_begin(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid)
 
     lmqtt_sem_reset(self);
     return LMQTT_OK;
+}
+
+int32_t lmqtt_cmd_begin(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid)
+{
+    return cmd_begin_common(self, kind, msgid, NULL, 0);
+}
+
+int32_t lmqtt_cmd_begin_raw(lmqtt_t *self, char *out, size_t outsz)
+{
+    return cmd_begin_common(self, LMQTT_CMD_RAW, 0, out, outsz);
 }
 
 int32_t lmqtt_cmd_abort(lmqtt_t *self)
@@ -590,7 +634,8 @@ int32_t lmqtt_cmd_finish(lmqtt_t *self, uint32_t ack_tmo, uint32_t urc_tmo,
         goto out;
     }
 
-    if (kind == LMQTT_CMD_NONE) {
+    /* NONE 与 RAW 都没有结果 URC：收到 OK/ERROR 就是全部结论，到此为止。 */
+    if (kind == LMQTT_CMD_NONE || kind == LMQTT_CMD_RAW) {
         rc = LMQTT_OK;
         goto out;
     }
@@ -654,4 +699,43 @@ int32_t lmqtt_cmd_exec(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid,
     }
 
     return lmqtt_cmd_finish(self, ack_tmo, urc_tmo, out);
+}
+
+int32_t lmqtt_cmd_exec_raw(lmqtt_t *self, const char *cmd, uint32_t ack_tmo,
+                           char *out, size_t outsz,
+                           size_t *out_len, size_t *out_lines)
+{
+    int32_t rc;
+
+    if (self == NULL || cmd == NULL) {
+        return LMQTT_ERR_PARAM;
+    }
+
+    rc = lmqtt_cmd_begin_raw(self, out, outsz);
+    if (rc != LMQTT_OK) {
+        return rc;
+    }
+
+    rc = lmqtt_cmd_send_str(self, cmd);
+    if (rc == LMQTT_OK) {
+        rc = lmqtt_cmd_send(self, "\r\n", 2);
+    }
+    if (rc != LMQTT_OK) {
+        lmqtt_cmd_abort(self);
+        return rc;
+    }
+
+    /* urc_tmo 无意义：RAW 在收到 OK/ERROR 时就结束，不会走到等结果 URC 那段 */
+    rc = lmqtt_cmd_finish(self, ack_tmo, 0, NULL);
+
+    /* 长度必须在 finish **之后**取：finish 内部的 cmd_abort 关上窗口，
+       此后接收侧不会再写 raw_len。 */
+    if (out_len != NULL) {
+        *out_len = self->cmd.raw_len;
+    }
+    if (out_lines != NULL) {
+        *out_lines = self->cmd.raw_lines;
+    }
+
+    return rc;
 }

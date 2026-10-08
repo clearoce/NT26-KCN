@@ -45,6 +45,9 @@ int32_t lmqtt_cmd_exec(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid,
  * 任一步失败后应直接返回；finish 会负责解锁。
  */
 int32_t lmqtt_cmd_begin(lmqtt_t *self, lmqtt_cmd_kind_t kind, uint16_t msgid);
+/* 开始一条透传事务（kind 固定 LMQTT_CMD_RAW）。out/outsz 是响应行落点，
+   必须在**开窗之前**装填 —— 故不能借用 lmqtt_cmd_begin 的签名。 */
+int32_t lmqtt_cmd_begin_raw(lmqtt_t *self, char *out, size_t outsz);
 int32_t lmqtt_cmd_send(lmqtt_t *self, const void *buf, size_t len);
 int32_t lmqtt_cmd_finish(lmqtt_t *self, uint32_t ack_tmo, uint32_t urc_tmo,
                          lmqtt_cmd_out_t *out);

@@ -30,6 +30,12 @@ typedef enum lmqtt_cmd_kind {
     LMQTT_CMD_DISC,         /* +LMQTTDISC:     <id>,<result>[,<extend>]   */
     LMQTT_CMD_SUBUNSUB,     /* +LMQTTSUBUNSUB: <id>,<msgID>,<result>[,<extend>] */
     LMQTT_CMD_PUB,          /* +LMQTTPUB:      <id>,<msgID>,<result>[,<extend>] */
+
+    /* 透传：**没有**结果 URC，结束条件与 NONE 相同（收到 OK/ERROR 即返回），
+       额外把窗口内的普通响应行收集给调用方（见 lmqtt_cmd_exec_raw）。
+
+       ⚠️ 只能追加在末尾：它的值要进 pending 的 kind 位，改动会移动既有取值。 */
+    LMQTT_CMD_RAW,
 } lmqtt_cmd_kind_t;
 
 /*
@@ -98,6 +104,21 @@ typedef struct lmqtt_cmd_ctx {
        ⚠️ 开窗条件依赖"send 返回 = 末字节已进寄存器"（当前 `IOT_UART_TX_INT = 0`，
        轮询发送）。**启用 TX_INT 后必须改判"TX 流空 / TC"**，否则窗口开早、真 OK 被挡。 */
     volatile bool     written;
+
+    /* ---- 透传命令（LMQTT_CMD_RAW）的响应落点 ----
+       缓冲由**调用方**提供（见 lmqtt_cmd_exec_raw），库自身不持有任何常驻缓冲
+       —— 本实例是静态的，在这里放一块定长缓冲会直接从 RAM 里扣。
+
+       装填顺序要紧：raw_out 必须在 pending 之前写好。接收侧是"先读 pending
+       认出 RAW、再去写 raw_out"，反过来的话它会拿上一轮遗留的指针写。
+
+       raw_len 既是当前总长、也是下一次写入位置。写入者是接收侧（单线程），
+       读取者在窗口关闭之后 —— 那时不会再有写入者。故与 down_drops 等计数
+       同类，不加 volatile。 */
+    char             *raw_out;
+    size_t            raw_outsz;
+    size_t            raw_len;
+    uint16_t          raw_lines;
 
     /* 最近一次命令的失败阶段（见 lmqtt_cmd_stage_t）。
        **刻意不被 cmd_abort 清掉** —— abort 在每条命令结束时都会跑，清掉就没法事后
@@ -259,6 +280,30 @@ bool lmqtt_is_connected(const lmqtt_t *self);
 
 /* 注册 STATS 回调（可为 NULL 注销）。cb 为 NULL 时也可用 lmqtt_is_connected 轮询。 */
 void lmqtt_set_stats_cb(lmqtt_t *self, lmqtt_stats_cb_t cb, void *user);
+
+/*
+ * 执行一条「透传」命令：写出 cmd（自动补 CRLF），等 OK/ERROR，
+ * 并把**窗口内**收到的普通响应行收集到调用方给出的缓冲。
+ *
+ * 存在的理由：AT 的 OK/ERROR 行**不带命令标识**，归属只能靠"当时是谁的窗口"
+ * 判定。非 LMQTT 的 AT 命令（AT+CSQ / AT+CEREG? / AT+CGPADDR …）若另起一个
+ * 引擎发送，它的收尾 OK 必然落在本引擎的窗外、被计成 stray —— 且反向也可能
+ * 被那个引擎冒领。走本函数后**AT 通道上只剩一个发射源**，归属才有定义。
+ *
+ *   cmd        命令字符串，**不含** CRLF
+ *   ack_tmo    等 OK/ERROR 的毫秒数
+ *   out/outsz  响应行落点；可为 NULL（只等结果、不收集）
+ *   out_len    回填总字节数；out_lines 回填行数（二者均可为 NULL）
+ *
+ * 各行以 '\0' 结尾、连续存放，行内**不含** CR/LF。缓冲放不下时**整行丢弃**
+ * （截断的半行会被调用方误解析），不做部分写入。
+ *
+ * 返回值同 lmqtt_cmd_exec。⚠️ out 的内容在函数**返回时**才完整；失败路径上
+ * 它可能停在半途，调用方应按返回值决定是否解析。
+ */
+int32_t lmqtt_cmd_exec_raw(lmqtt_t *self, const char *cmd, uint32_t ack_tmo,
+                           char *out, size_t outsz,
+                           size_t *out_len, size_t *out_lines);
 
 #ifdef __cplusplus
 }

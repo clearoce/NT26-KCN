@@ -715,6 +715,95 @@ static void test_early_ack_fenced(void)
 
 /* ------------------------------------------------------------------ */
 
+/* 透传命令（LMQTT_CMD_RAW）：一条 AT+CSQ 的往返整段落在窗口内。
+   这是"非 LMQTT 的 AT 命令也走同一个窗口"能成立的证据 —— 归属不再靠猜。 */
+static void test_raw_collects_lines(void)
+{
+    char                 buf[128];
+    size_t               len = 0, lines = 0;
+    int32_t              rc;
+    lmqtt_err_counters_t ec;
+
+    printf("test_raw_collects_lines\n");
+    setup();
+    reset_steps("+CSQ: 25,0\r\nOK\r\n", NULL, NULL);
+
+    rc = lmqtt_cmd_exec_raw(&g_ctx, "AT+CSQ", 1000, buf, sizeof(buf), &len, &lines);
+
+    CHECK(rc == LMQTT_OK, "透传命令应成功");
+    CHECK(lines == 1, "只收集普通行；OK 是终结符，不进缓冲");
+    CHECK(len == strlen("+CSQ: 25,0") + 1, "总长应含行尾的 '\\0'");
+    CHECK(strcmp(buf, "+CSQ: 25,0") == 0, "行内容应原样，且不含 CR/LF");
+    CHECK(strstr(g_tx, "AT+CSQ\r\n") != NULL, "应写出命令并补 CRLF");
+
+    /* 判据所在：这次往返不产生任何"窗外回执" */
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.stray_oks == 0, "窗口内的 OK 不得计成 stray_oks");
+    CHECK(ec.early_acks == 0, "写出完成后到达的 OK 不得计 early");
+    CHECK(ec.extra_acks == 0, "本窗只有一条 OK");
+    CHECK(ec.rx_other == 1, "普通行仍计入 rx_other —— 诊断口径不因 RAW 而变");
+}
+
+/* 缓冲放不下 ⇒ 整行丢弃，不做部分写入（半行会被调用方误解析） */
+static void test_raw_overflow_drops_line(void)
+{
+    char    buf[8];
+    size_t  len = 0, lines = 0;
+    int32_t rc;
+
+    printf("test_raw_overflow_drops_line\n");
+    setup();
+    reset_steps("+CSQ: 25,0\r\nOK\r\n", NULL, NULL);
+
+    rc = lmqtt_cmd_exec_raw(&g_ctx, "AT+CSQ", 1000, buf, sizeof(buf), &len, &lines);
+
+    CHECK(rc == LMQTT_OK, "缓冲不足不影响命令本身的结论");
+    CHECK(lines == 0, "放不下的行应整行丢弃");
+    CHECK(len == 0, "丢弃的行不得留下部分字节");
+}
+
+/* 透传窗口内到达的 +LMQTT 结果 URC（上一条命令的迟到件）应被消费掉。
+   若它落进 unmatched_urcs，宿主会点亮 L2 —— 一个**假故障**。 */
+static void test_raw_absorbs_late_lmqtt_urc(void)
+{
+    char                 buf[128];
+    size_t               len = 0, lines = 0;
+    lmqtt_err_counters_t ec;
+
+    printf("test_raw_absorbs_late_lmqtt_urc\n");
+    setup();
+    reset_steps("+LMQTTPUB: 0,99,0\r\n+CSQ: 25,0\r\nOK\r\n", NULL, NULL);
+
+    (void)lmqtt_cmd_exec_raw(&g_ctx, "AT+CSQ", 1000, buf, sizeof(buf), &len, &lines);
+
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.unmatched_urcs == 0, "迟到的结果 URC 不得计成 unmatched_urcs");
+    CHECK(ec.stale_urcs == 0, "配对字不符只对同 kind 的结果 URC 有意义");
+    CHECK(lines == 1, "普通行仍应被收集");
+    CHECK(strcmp(buf, "+CSQ: 25,0") == 0, "收集到的应是普通行，不含 URC");
+}
+
+/* 模组拒绝：返回 LMQTT_ERR_AT；out 可为 NULL（只等结果、不收集） */
+static void test_raw_error_and_null_out(void)
+{
+    char    buf[128];
+    size_t  len = 0, lines = 0;
+    int32_t rc;
+
+    printf("test_raw_error_and_null_out\n");
+    setup();
+    reset_steps("ERROR\r\n", NULL, NULL);
+    rc = lmqtt_cmd_exec_raw(&g_ctx, "AT+CSQ", 1000, buf, sizeof(buf), &len, &lines);
+    CHECK(rc == LMQTT_ERR_AT, "模组回 ERROR 应返回 LMQTT_ERR_AT");
+
+    setup();
+    reset_steps("+CSQ: 25,0\r\nOK\r\n", NULL, NULL);
+    rc = lmqtt_cmd_exec_raw(&g_ctx, "AT+CSQ", 1000, NULL, 0, &len, &lines);
+    CHECK(rc == LMQTT_OK, "out 为 NULL 时应只等结果");
+    CHECK(len == 0 && lines == 0, "不收集时长度与行数都应为 0");
+    CHECK(g_ctx.cmd.raw_out == NULL, "未提供缓冲时不得留下悬垂指针");
+}
+
 int main(void)
 {
     printf("=== lmqtt core tests ===\n");
@@ -739,6 +828,10 @@ int main(void)
     test_ack_attribution_counters();
     test_cmd_fail_stage();
     test_early_ack_fenced();
+    test_raw_collects_lines();
+    test_raw_overflow_drops_line();
+    test_raw_absorbs_late_lmqtt_urc();
+    test_raw_error_and_null_out();
 
     printf("\n=== %d passed, %d failed ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;
