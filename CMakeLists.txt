@@ -8,6 +8,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 option(NT26_BUILD_TESTS "构建 PC 端单元测试" ON)
 
 add_subdirectory(lmqtt)
+add_subdirectory(at)
 
 if(NT26_BUILD_TESTS)
     enable_testing()
