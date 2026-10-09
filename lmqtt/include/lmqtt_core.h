@@ -189,6 +189,19 @@ struct lmqtt {
     uint32_t        early_errs;     /* 同上，ERROR / +CME ERROR */
     uint32_t        stale_urcs;     /* 配对字不符、被丢弃的结果 URC */
     uint32_t        rx_other;       /* 既非 +LMQTT 也非 OK/ERROR 的行（诊断用，非故障） */
+    /* `+CME ERROR: <n>` 的**编号**。此前只做前缀文本匹配就把整行丢了 ——
+       而编号是模组对"这条命令为什么不认"的唯一说明（见 test_* 与 AT 手册）。 */
+    uint32_t        cme_errs;       /* 收到过多少条 +CME ERROR */
+    int32_t         last_cme_code;  /* 最近一条的编号；0 = 从未收到过 */
+
+    /* 模组的 `NORMAL POWER DOWN` 通告。**它是"复位真的生效了"的唯一证据** ——
+       诊断拉过 PWRKEY 之后，此前只能靠"裸 AT 还能应答"来判，而"从没真正断过电"
+       同样满足那一条。模组主动吐出这一行，才说明它确实断电了。 */
+    uint32_t        pwr_downs;      /* 收到过多少条 NORMAL POWER DOWN */
+    /* 模组的**启动横幅**。与上面那条是一对：断电通告说"我断了"，横幅说"我起来了"。
+       两条凑齐才算一次完整的复位。文本取自实测 RTT 抓包（`rx: ^boot.rom'v`），
+       与 lmqtt/tests/test_core.c 里用作"模组启动横幅"样本的那一行一致。 */
+    uint32_t        boots;          /* 收到过多少条启动横幅 */
 
     /* ---- 状态 ---- */
     bool            connected;
@@ -255,6 +268,10 @@ typedef struct lmqtt_err_counters {
     uint32_t early_errs;        /* 同上，ERROR / +CME ERROR */
     uint32_t stale_urcs;        /* 配对字不符、被丢弃的结果 URC */
     uint32_t rx_other;          /* 既非 +LMQTT 也非 OK/ERROR 的行 */
+    uint32_t cme_errs;          /* +CME ERROR 的行数 */
+    int32_t  last_cme_code;     /* 最近一条 +CME ERROR 的编号（0 = 从未收到） */
+    uint32_t pwr_downs;         /* NORMAL POWER DOWN 的行数（模组确认断电） */
+    uint32_t boots;             /* 启动横幅的行数（模组重启了） */
 } lmqtt_err_counters_t;
 
 void lmqtt_get_err_counters(const lmqtt_t *self, lmqtt_err_counters_t *out);

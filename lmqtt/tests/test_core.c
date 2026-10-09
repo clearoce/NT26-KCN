@@ -568,6 +568,26 @@ static void test_ack_attribution_counters(void)
     CHECK(ec.rx_other == 2, "既非 +LMQTT 也非终结符的行应计 rx_other");
     CHECK(ec.stray_oks == 0 && ec.stray_errs == 0, "它们不是回执，不得计进 stray_*");
 
+    /* 5b) `+CME ERROR: <n>` 的**编号要留下来** —— 它是模组"为什么不认这条命令"
+           的唯一说明，此前只做前缀匹配就整行丢了 */
+    setup();
+    lmqtt_rx_feed(&g_ctx, "+CME ERROR: 515\r\n", strlen("+CME ERROR: 515\r\n"));
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.cme_errs == 1, "+CME ERROR 应计 cme_errs");
+    CHECK(ec.last_cme_code == 515, "编号应被解析并留存（此前只匹配前缀就丢）");
+    CHECK(ec.stray_errs == 1, "无窗口在途 ⇒ 同时是 stray_errs");
+
+    /* 5c) 模组的两条生命周期通告：断电与重启。
+           **两条凑齐才算一次完整的断电重启** —— 此前拉过 PWRKEY 之后唯一的验证是
+           "裸 AT 还能应答"，而"从没真正断过电"同样满足那一条。 */
+    setup();
+    lmqtt_rx_feed(&g_ctx, "NORMAL POWER DOWN\r\n", strlen("NORMAL POWER DOWN\r\n"));
+    lmqtt_rx_feed(&g_ctx, "^boot.rom'v\r\n", strlen("^boot.rom'v\r\n"));
+    lmqtt_get_err_counters(&g_ctx, &ec);
+    CHECK(ec.pwr_downs == 1, "NORMAL POWER DOWN 应计 pwr_downs");
+    CHECK(ec.boots == 1, "启动横幅应计 boots");
+    CHECK(ec.rx_other == 2, "它们同时仍计入 rx_other —— 那个口径不该因本分支而变");
+
     /* 6) 配对字不符的迟到结果 URC */
     setup();
     lmqtt_cmd_begin(&g_ctx, LMQTT_CMD_PUB, 5);

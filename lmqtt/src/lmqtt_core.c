@@ -124,6 +124,10 @@ void lmqtt_get_err_counters(const lmqtt_t *self, lmqtt_err_counters_t *out)
     out->early_errs     = self->early_errs;
     out->stale_urcs     = self->stale_urcs;
     out->rx_other       = self->rx_other;
+    out->cme_errs       = self->cme_errs;
+    out->last_cme_code  = self->last_cme_code;
+    out->pwr_downs      = self->pwr_downs;
+    out->boots          = self->boots;
 }
 
 /* ------------------------------------------------------------------ */
@@ -380,6 +384,19 @@ static void lmqtt_line_dispatch(lmqtt_t *self, const char *line, size_t len)
         return;
     }
     if (strncmp(line, "ERROR", 5) == 0 || strncmp(line, "+CME ERROR", 10) == 0) {
+        /* `+CME ERROR: <n>` 的编号**留下来**：它是模组"为什么不认这条命令"的唯一说明，
+           此前只做前缀匹配就把整行丢了（= 段② 清点里"可分但没接"的典型）。 */
+        if (strncmp(line, "+CME ERROR", 10) == 0) {
+            const char *p = line + 10;
+            int32_t     v = 0;
+            int         got = 0;
+            while (*p == ' ' || *p == ':') { p++; }
+            while (*p >= '0' && *p <= '9' && got < 6) { v = v * 10 + (*p++ - '0'); got++; }
+            self->cme_errs++;
+            if (got > 0) {
+                self->last_cme_code = v;
+            }
+        }
         if (self->cmd.busy && !self->cmd.written) {
             self->early_errs++;              /* 同上：写出去之前来的 ERROR 也不认 */
             return;
@@ -403,6 +420,17 @@ static void lmqtt_line_dispatch(lmqtt_t *self, const char *line, size_t len)
 
        两者都计入 rx_other：它回答的是"库里看见了多少非 +LMQTT 的行"，
        引入 RAW 之后这个口径不该变，否则它作为诊断量的可比性就断了。 */
+    /* 模组的断电通告。**先认它，再计 rx_other** —— 它同时要计入 rx_other，
+       那个口径是"库里看见了多少非 +LMQTT 的行"，引入本分支不该改变它。 */
+    if (strncmp(line, "NORMAL POWER DOWN", 17) == 0) {
+        self->pwr_downs++;
+    }
+    /* 启动横幅。文本取自实测（`local/rtt_*.txt` 的 `rx: ^boot.rom'v`），
+       与 tests/test_core.c 用的样本一致 —— **别照文档猜字符串**。 */
+    if (strncmp(line, "^boot.rom", 9) == 0) {
+        self->boots++;
+    }
+
     self->rx_other++;
     if (LMQTT_PEND_KIND(self->cmd.pending) == LMQTT_CMD_RAW) {
         lmqtt_raw_append(self, line, len);
