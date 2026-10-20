@@ -62,9 +62,17 @@ extern "C" {
 
 /* ------------------------------------------------------------------ */
 /* 容量上限 */
+#ifdef APP_L126_SLIM
+/* L126 无 App OTA：下行最大只剩控制/应答（≤251 B），320 行已够；省 576 B。
+   ⚠️ L19x 带 OTA 接收器时不可用（分片 payload 约 397 B）。 */
+#define LMQTT_LINE_MAX      320U    /* 单行 AT 响应/URC 组帧缓冲 */
+#define LMQTT_TOPIC_MAX     256U    /* 手册：topic 0~256 字节 */
+#define LMQTT_DOWN_MAX      320U    /* 下行 payload 缓冲 */
+#else
 #define LMQTT_LINE_MAX      512U    /* 单行 AT 响应/URC 组帧缓冲 */
 #define LMQTT_TOPIC_MAX     256U    /* 手册：topic 0~256 字节 */
 #define LMQTT_DOWN_MAX      512U    /* 下行 payload 缓冲 */
+#endif
 #define LMQTT_HOST_MAX      100U    /* 手册：host_name 最大 100 字节 */
 #define LMQTT_CLIENTID_MAX  256U    /* 手册：clientID/username 最大 256 字节 */
 
