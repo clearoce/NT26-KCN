@@ -164,7 +164,8 @@ struct lmqtt {
        正在解析的那块内存（"借用语义"形同虚设）。改双缓冲后，生产者的
        下一次写落在另一块槽，再下一次会被 down_ready 拦下 —— 消费者手里的
        那块在整个解析期间都安全。 */
-    char            down[2][LMQTT_DOWN_MAX];
+    char            down[2][LMQTT_DOWN_MAX]; /* 每槽为 topic\0payload\0 */
+    uint16_t        down_payload_offset[2];
     volatile uint8_t down_idx;      /* 生产者最后写入的槽号 */
     volatile bool   down_ready;
     uint32_t        down_drops;     /* 因未及时取走/超长而丢弃的条数 */
@@ -244,7 +245,11 @@ int32_t lmqtt_rx_feed(lmqtt_t *self, const void *buf, size_t len);
  */
 const char *lmqtt_take_downlink(lmqtt_t *self);
 
-/* 累计被丢弃的下行条数（未及时取走或超出 LMQTT_DOWN_MAX） */
+/* 同时取出该条下行的 topic；两个指针均在下次 take 调用前有效。
+   无下行时返回 NULL，并将 *topic 置 NULL；topic 可传 NULL。 */
+const char *lmqtt_take_downlink_with_topic(lmqtt_t *self, const char **topic);
+
+/* 累计被丢弃的下行条数（未及时取走或 topic/payload 合计超出缓冲） */
 uint32_t lmqtt_downlink_drops(const lmqtt_t *self);
 
 /* 故障计数快照。四个计数只增不减，业务侧每轮取一次做差分即可得到"本轮新增几条"。

@@ -49,11 +49,14 @@ static void lmqtt_sem_reset(lmqtt_t *self)
 /* ------------------------------------------------------------------ */
 /* 下行投递 */
 
-void lmqtt_downlink_put(lmqtt_t *self, const char *data, size_t len)
+void lmqtt_downlink_put(lmqtt_t *self, const char *topic, size_t topic_len,
+                       const char *data, size_t len)
 {
     uint8_t slot;
 
-    if (self->down_ready || len >= LMQTT_DOWN_MAX) {
+    if (self->down_ready || topic_len > LMQTT_TOPIC_MAX ||
+        topic_len + 1U >= LMQTT_DOWN_MAX ||
+        len >= LMQTT_DOWN_MAX - topic_len - 1U) {
         self->down_drops++;
         LMQTT_LOG(LMQTT_LOG_WARN, "downlink dropped: busy=%d len=%u drops=%u",
                   (int)self->down_ready, (unsigned)len, (unsigned)self->down_drops);
@@ -61,16 +64,27 @@ void lmqtt_downlink_put(lmqtt_t *self, const char *data, size_t len)
     }
 
     slot = (uint8_t)(self->down_idx ^ 1u);    /* 写另一块，别碰消费者手里那块 */
-    memcpy(self->down[slot], data, len);
-    self->down[slot][len] = '\0';
+    memcpy(self->down[slot], topic, topic_len);
+    self->down[slot][topic_len] = '\0';
+    self->down_payload_offset[slot] = (uint16_t)(topic_len + 1U);
+    memcpy(self->down[slot] + topic_len + 1U, data, len);
+    self->down[slot][topic_len + 1U + len] = '\0';
     self->down_idx   = slot;
     self->down_ready = true;
 }
 
 const char *lmqtt_take_downlink(lmqtt_t *self)
 {
+    return lmqtt_take_downlink_with_topic(self, NULL);
+}
+
+const char *lmqtt_take_downlink_with_topic(lmqtt_t *self, const char **topic)
+{
     uint8_t slot;
 
+    if (topic != NULL) {
+        *topic = NULL;
+    }
     if (self == NULL || !self->down_ready) {
         return NULL;
     }
@@ -78,7 +92,10 @@ const char *lmqtt_take_downlink(lmqtt_t *self)
     /* 先取槽号再清标志：清标志前 down_ready 仍为真，生产者不会写入 */
     slot = self->down_idx;
     self->down_ready = false;
-    return self->down[slot];
+    if (topic != NULL) {
+        *topic = self->down[slot];
+    }
+    return self->down[slot] + self->down_payload_offset[slot];
 }
 
 uint32_t lmqtt_downlink_drops(const lmqtt_t *self)
@@ -155,6 +172,8 @@ void lmqtt_stats_dispatch(lmqtt_t *self, lmqtt_stats_t stat, int32_t extend)
 static void lmqtt_urc_recv(lmqtt_t *self, const char *data)
 {
     const char *p = data;
+    const char *topic;
+    size_t topic_len;
     int k;
 
     /* 跳过 RECV,<tcpconnectID>,<msgID> 共三段。
@@ -165,16 +184,24 @@ static void lmqtt_urc_recv(lmqtt_t *self, const char *data)
             return;                 /* 缓存模式：无 topic/payload，交给 LMQTTREAD 读 */
         }
         p = cut + 1;
-        while (*p == ' ' || *p == '"') {
+        while (*p == ' ') {
             p++;
         }
     }
 
+    if (*p != '"') {
+        return;
+    }
+    topic = ++p;
     /* 定位 topic 的结尾引号，p 随之指向 payload */
     while (*p != '\0' && *p != '"') {
         p++;
     }
     if (*p != '"') {
+        return;
+    }
+    topic_len = (size_t)(p - topic);
+    if (topic_len == 0U) {
         return;
     }
     p++;                            /* 跳过 topic 的结尾引号 */
@@ -183,8 +210,8 @@ static void lmqtt_urc_recv(lmqtt_t *self, const char *data)
         while (*p == ' ') {
             p++;                    /* 只跳过分隔空白 */
         }
-    } else if (*p == '"') {
-        p++;
+    } else {
+        return;
     }
 
     /* payload 的取法：
@@ -205,7 +232,7 @@ static void lmqtt_urc_recv(lmqtt_t *self, const char *data)
             return;
         }
 
-        lmqtt_downlink_put(self, p, plen);
+        lmqtt_downlink_put(self, topic, topic_len, p, plen);
     }
 }
 

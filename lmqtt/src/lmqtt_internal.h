@@ -57,8 +57,9 @@ int32_t lmqtt_cmd_abort(lmqtt_t *self);
 /* 向串口写字符串（不补 CRLF），供分段发送拼装用 */
 int32_t lmqtt_cmd_send_str(lmqtt_t *self, const char *s);
 
-/* 向下行缓冲投递一条 payload（由 RECV URC 调用）。data 不要求以 '\0' 结尾。 */
-void lmqtt_downlink_put(lmqtt_t *self, const char *data, size_t len);
+/* 成对投递 topic 与 payload；输入均不要求以 '\0' 结尾。 */
+void lmqtt_downlink_put(lmqtt_t *self, const char *topic, size_t topic_len,
+                       const char *data, size_t len);
 
 /* STATS URC 分发（由 core 的行分发调用） */
 void lmqtt_stats_dispatch(lmqtt_t *self, lmqtt_stats_t stat, int32_t extend);
